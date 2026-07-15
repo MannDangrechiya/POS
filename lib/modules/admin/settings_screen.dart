@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/observability/error_ui.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import '../../core/firestore/firestore_parse.dart';
 import '../../core/firestore/firestore_rule_safe_update.dart';
 import '../../data/models/setting_model.dart';
@@ -10,6 +11,26 @@ import '../../core/rbac/role_constants.dart';
 import '../../core/firestore/firestore_stream_cache.dart';
 import '../../routing/permission_gate.dart';
 import '../../routing/screen_permission.dart';
+
+/// Well-known shop-level setting keys with dedicated UI (Requirement in
+/// Detail §32.2: "Change tax rules", "Enable/disable payment methods",
+/// "Configure POS behavior"). Any other key still goes through the generic
+/// list below.
+class _KnownSettingKeys {
+  static const taxRatePercent = 'tax_rate_percent';
+  static const paymentCashEnabled = 'payment_cash_enabled';
+  static const paymentUpiEnabled = 'payment_upi_enabled';
+  static const paymentCardEnabled = 'payment_card_enabled';
+  static const posAutoPrintReceipt = 'pos_auto_print_receipt';
+
+  static const all = {
+    taxRatePercent,
+    paymentCashEnabled,
+    paymentUpiEnabled,
+    paymentCardEnabled,
+    posAutoPrintReceipt,
+  };
+}
 
 /// Settings screen: Shop-level (Admin) or System-level (Super Admin).
 /// Read/write per Firestore rules; future-only application per requirements.
@@ -88,6 +109,114 @@ class _SettingsScreenState extends State<SettingsScreen> {
         .orderBy('key');
   }
 
+  /// Writes an audit_logs entry for a settings change via the extended
+  /// logAuthEvent callable (see auth_audit.ts — it now accepts entityType/
+  /// entityId/metadata instead of hardcoding a generic 'AUTH' entry).
+  /// Requirement in Detail §32.3 / §37.2: settings changes must be logged.
+  /// Best-effort: a logging failure must not block the settings write that
+  /// already succeeded.
+  Future<void> _auditSettingChange({
+    required String action,
+    required String settingId,
+    required String key,
+    required dynamic oldValue,
+    required dynamic newValue,
+  }) async {
+    try {
+      await FirebaseFunctions.instance.httpsCallable('logAuthEvent').call({
+        'action': action,
+        'shopId': _isSuperAdmin ? 'system' : (_shopId ?? ''),
+        'entityType': 'setting',
+        'entityId': settingId,
+        'metadata': {
+          'key': key,
+          'oldValue': oldValue,
+          'newValue': newValue,
+        },
+      });
+    } catch (e, st) {
+      reportCatch(e, stackTrace: st, tag: 'SettingsScreen.audit');
+    }
+  }
+
+  String _settingIdFor(String key) =>
+      _isSuperAdmin ? 'system_$key' : 'shop_${_shopId}_$key';
+
+  /// Shared write path for the domain-specific controls below — same
+  /// settings collection/shape as the generic editor, just with a typed
+  /// value and a fixed, well-known key.
+  Future<void> _setKnownSetting(
+    BuildContext context,
+    String key,
+    dynamic newValue, {
+    dynamic oldValue,
+    bool requireConfirmation = false,
+    String? confirmMessage,
+  }) async {
+    if (requireConfirmation) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Confirm change'),
+          content: Text(
+            confirmMessage ??
+                'This changes a setting that affects live POS operations. Continue?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Confirm'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    if (!context.mounted) return;
+
+    final settingId = _settingIdFor(key);
+    final now = Timestamp.now();
+    final doc = <String, dynamic>{
+      'settingId': settingId,
+      'scope': _isSuperAdmin ? 'system' : 'shop',
+      'key': key,
+      'value': newValue,
+      'updatedAt': now,
+    };
+    if (!_isSuperAdmin && _shopId != null) {
+      doc['shopId'] = _shopId;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('settings')
+          .doc(settingId)
+          .set(doc, SetOptions(merge: true));
+      await _auditSettingChange(
+        action: 'SETTING_UPDATED',
+        settingId: settingId,
+        key: key,
+        oldValue: oldValue,
+        newValue: newValue,
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Updated ${key.replaceAll('_', ' ')}')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return PermissionGate(
@@ -125,7 +254,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             return const Center(child: CircularProgressIndicator());
           }
           final docs = snapshot.data?.docs ?? [];
-          final settings = docs
+          final allSettings = docs
               .map((d) {
                 final map = FirestoreParse.queryDocumentData(d);
                 if (map == null) return null;
@@ -133,20 +262,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
               })
               .whereType<SettingModel>()
               .toList();
+          final knownByKey = {for (final s in allSettings) s.key: s.value};
+          // Domain-specific controls (tax/payment/POS behavior) get their
+          // own dedicated UI; the generic key/value list below is for
+          // anything else.
+          final settings = allSettings
+              .where((s) => !_KnownSettingKeys.all.contains(s.key))
+              .toList();
+
+          final domainSection = _isSuperAdmin
+              ? const SizedBox.shrink()
+              : _buildDomainSettingsCard(context, knownByKey);
+
           if (settings.isEmpty) {
-            return Center(
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
               child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text(
-                    'No settings yet',
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: () => _addOrEditSetting(context, null),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add setting'),
+                  domainSection,
+                  if (!_isSuperAdmin) const SizedBox(height: 16),
+                  Center(
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 24),
+                        Text(
+                          'No custom settings yet',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: () => _addOrEditSetting(context, null),
+                          icon: const Icon(Icons.add),
+                          label: const Text('Add setting'),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -154,10 +305,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           }
           return ListView.separated(
             padding: const EdgeInsets.all(16),
-            itemCount: settings.length,
+            itemCount: settings.length + 1,
             separatorBuilder: (_, _) => const SizedBox(height: 8),
             itemBuilder: (context, index) {
-              final s = settings[index];
+              if (index == 0) return domainSection;
+              final s = settings[index - 1];
               return Card(
                 child: ListTile(
                   title: Text(s.key),
@@ -191,6 +343,195 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (value is num) return value.toString();
     if (value is bool) return value ? 'Yes' : 'No';
     return value.toString();
+  }
+
+  /// Guards against disabling every payment method at once — that would
+  /// leave Employees with no selectable option on the Payment Selection
+  /// Screen, which is mandatory per Requirement in Detail §20.4.
+  Future<void> _setPaymentMethodEnabled(
+    BuildContext context, {
+    required String key,
+    required String label,
+    required bool newValue,
+    required bool oldValue,
+    required bool otherMethodsEnabled,
+  }) async {
+    if (!newValue && !otherMethodsEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'At least one payment method must stay enabled — enable '
+            'another method before disabling $label.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    await _setKnownSetting(
+      context,
+      key,
+      newValue,
+      oldValue: oldValue,
+      requireConfirmation: !newValue,
+      confirmMessage: 'Disable $label as a payment method for future orders?',
+    );
+  }
+
+  /// Dedicated UI for the well-known shop-level settings (tax rate, payment
+  /// method toggles, POS behavior) instead of forcing Admin to know exact
+  /// key strings and free-type values — Requirement in Detail §32.2.
+  Widget _buildDomainSettingsCard(
+    BuildContext context,
+    Map<String, dynamic> knownByKey,
+  ) {
+    final taxRate =
+        (knownByKey[_KnownSettingKeys.taxRatePercent] as num?)?.toDouble() ?? 0;
+    final cashEnabled =
+        knownByKey[_KnownSettingKeys.paymentCashEnabled] as bool? ?? true;
+    final upiEnabled =
+        knownByKey[_KnownSettingKeys.paymentUpiEnabled] as bool? ?? true;
+    final cardEnabled =
+        knownByKey[_KnownSettingKeys.paymentCardEnabled] as bool? ?? true;
+    final autoPrint =
+        knownByKey[_KnownSettingKeys.posAutoPrintReceipt] as bool? ?? false;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Common Settings',
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Applies only to future orders (§32.3).',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Tax rate (%)',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+                SizedBox(
+                  width: 100,
+                  child: TextFormField(
+                    key: ValueKey('tax_rate_$taxRate'),
+                    initialValue: taxRate.toStringAsFixed(2),
+                    textAlign: TextAlign.end,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                    ),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onFieldSubmitted: (text) {
+                      final parsed = double.tryParse(text.trim());
+                      if (parsed == null || parsed < 0 || parsed > 100) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Enter a tax rate between 0 and 100'),
+                          ),
+                        );
+                        return;
+                      }
+                      _setKnownSetting(
+                        context,
+                        _KnownSettingKeys.taxRatePercent,
+                        parsed,
+                        oldValue: taxRate,
+                        requireConfirmation: true,
+                        confirmMessage:
+                            'Change tax rate from ${taxRate.toStringAsFixed(2)}% '
+                            'to ${parsed.toStringAsFixed(2)}%? This applies to '
+                            'future orders only.',
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const Divider(height: 32),
+            Text(
+              'Payment methods',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Cash'),
+              value: cashEnabled,
+              onChanged: (v) => _setPaymentMethodEnabled(
+                context,
+                key: _KnownSettingKeys.paymentCashEnabled,
+                label: 'Cash',
+                newValue: v,
+                oldValue: cashEnabled,
+                otherMethodsEnabled: upiEnabled || cardEnabled,
+              ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('UPI / Online Payment'),
+              value: upiEnabled,
+              onChanged: (v) => _setPaymentMethodEnabled(
+                context,
+                key: _KnownSettingKeys.paymentUpiEnabled,
+                label: 'UPI',
+                newValue: v,
+                oldValue: upiEnabled,
+                otherMethodsEnabled: cashEnabled || cardEnabled,
+              ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Card'),
+              value: cardEnabled,
+              onChanged: (v) => _setPaymentMethodEnabled(
+                context,
+                key: _KnownSettingKeys.paymentCardEnabled,
+                label: 'Card',
+                newValue: v,
+                oldValue: cardEnabled,
+                otherMethodsEnabled: cashEnabled || upiEnabled,
+              ),
+            ),
+            const Divider(height: 32),
+            Text(
+              'POS behavior',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Auto-print receipt on order confirmation'),
+              value: autoPrint,
+              onChanged: (v) => _setKnownSetting(
+                context,
+                _KnownSettingKeys.posAutoPrintReceipt,
+                v,
+                oldValue: autoPrint,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _addOrEditSetting(BuildContext context, SettingModel? existing) async {
@@ -275,6 +616,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           doc['shopId'] = _shopId;
         }
         await db.collection('settings').doc(settingId).set(doc);
+        await _auditSettingChange(
+          action: 'SETTING_CREATED',
+          settingId: settingId,
+          key: key,
+          oldValue: null,
+          newValue: value,
+        );
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Setting added')),
@@ -290,6 +638,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               ),
             );
+        await _auditSettingChange(
+          action: 'SETTING_UPDATED',
+          settingId: existing.settingId,
+          key: key,
+          oldValue: existing.value,
+          newValue: value,
+        );
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Setting updated')),
@@ -332,6 +687,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           .collection('settings')
           .doc(s.settingId)
           .delete();
+      await _auditSettingChange(
+        action: 'SETTING_DELETED',
+        settingId: s.settingId,
+        key: s.key,
+        oldValue: s.value,
+        newValue: null,
+      );
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Setting deleted')),

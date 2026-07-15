@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get/get.dart';
 import '../../../core/firestore/firestore_rule_safe_update.dart';
 import '../../../data/models/product_model.dart';
@@ -23,7 +24,10 @@ class ProductListScreen extends StatefulWidget {
 class _ProductListScreenState extends State<ProductListScreen> {
   final ProductController _controller = Get.put(ProductController());
   String? _shopId;
+  String? _role;
   bool _isLoading = true;
+
+  bool get _isSuperAdmin => _role == 'SuperAdmin';
 
   @override
   void initState() {
@@ -55,6 +59,7 @@ class _ProductListScreenState extends State<ProductListScreen> {
         if (!mounted) return;
         setState(() {
           _shopId = userData.shopId;
+          _role = userData.role;
           _isLoading = false;
         });
         _controller.setLoading(false);
@@ -104,6 +109,64 @@ class _ProductListScreenState extends State<ProductListScreen> {
       if (pageContext.mounted) {
         ScaffoldMessenger.of(pageContext).showSnackBar(
           SnackBar(content: Text('Error updating product: $e')),
+        );
+      }
+    } finally {
+      _controller.setLoading(false);
+    }
+  }
+
+  /// Super Admin only. Soft-deletes the product (status -> 'Deleted') via the
+  /// deleteProduct Cloud Function so history stays resolvable in past orders
+  /// and the deletion is audit-logged (see deleteProduct.ts for rationale).
+  Future<void> _deleteProduct(
+    BuildContext pageContext,
+    ProductModel product,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: pageContext,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete product?'),
+        content: Text(
+          'Delete "${product.name}"? It will no longer be sellable or '
+          'listed, but will remain visible in past orders.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      _controller.setLoading(true);
+      await FirebaseFunctions.instance.httpsCallable('deleteProduct').call(
+        <String, dynamic>{
+          'productId': product.productId,
+          'shopId': product.shopId,
+        },
+      );
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(content: Text('Product "${product.name}" deleted')),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting product: ${e.message ?? e.code}'),
+          ),
         );
       }
     } finally {
@@ -189,7 +252,11 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 parse: (data, _) => ProductModel.tryFromMap(data),
                 itemKey: (p) => p.productId,
                 filterItems: (items) {
-                  var filtered = items;
+                  // Soft-deleted products (status: 'Deleted') never appear in
+                  // the management list — they only remain resolvable by ID
+                  // for historical order lookups.
+                  var filtered =
+                      items.where((p) => p.status != 'Deleted').toList();
                   final q = _controller.searchQuery.value.trim().toLowerCase();
                   if (q.isNotEmpty) {
                     filtered = filtered
@@ -301,6 +368,8 @@ class _ProductListScreenState extends State<ProductListScreen> {
               );
             } else if (value == 'toggle') {
               _toggleProductStatus(context, product);
+            } else if (value == 'delete') {
+              _deleteProduct(context, product);
             }
           },
           itemBuilder: (context) => [
@@ -327,6 +396,28 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 ],
               ),
             ),
+            // Delete is Super Admin only (Requirement in Detail §26.2/§5.1 —
+            // Admin can disable but never delete).
+            if (_isSuperAdmin)
+              PopupMenuItem(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.delete_outline,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Delete',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),

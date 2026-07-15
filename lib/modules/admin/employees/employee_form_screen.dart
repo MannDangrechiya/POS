@@ -6,10 +6,19 @@ import 'package:get/get.dart';
 import '../../../data/models/user_model.dart';
 import 'employee_controller.dart';
 
-/// Employee Form Screen - Create New Employee
-/// Allows Admin to create new employees with Firebase Auth and Firestore
+/// Employee Form Screen - Create or Edit an Employee
+/// Create: Admin/Super Admin creates a new employee (Firebase Auth + Firestore).
+/// Edit (when [employee] is provided): name/phone only — email is tied to the
+/// Firebase Auth identity and is not editable here; role/status/shopId are
+/// managed elsewhere (activate/deactivate toggle, Super-Admin delete).
 class EmployeeFormScreen extends StatefulWidget {
-  const EmployeeFormScreen({super.key});
+  const EmployeeFormScreen({super.key, this.employee});
+
+  /// When non-null, the form edits this employee's name/phone instead of
+  /// creating a new one.
+  final UserModel? employee;
+
+  bool get isEditMode => employee != null;
 
   @override
   State<EmployeeFormScreen> createState() => _EmployeeFormScreenState();
@@ -18,9 +27,15 @@ class EmployeeFormScreen extends StatefulWidget {
 class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
   final _formKey = GlobalKey<FormState>();
   final EmployeeController _controller = Get.find<EmployeeController>();
-  final _nameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _phoneController = TextEditingController();
+  late final _nameController = TextEditingController(
+    text: widget.employee?.name ?? '',
+  );
+  late final _emailController = TextEditingController(
+    text: widget.employee?.email ?? '',
+  );
+  late final _phoneController = TextEditingController(
+    text: widget.employee?.phone ?? '',
+  );
   final _passwordController = TextEditingController();
   String? _shopId;
   bool _isLoading = false;
@@ -29,10 +44,14 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _loadUserData(context);
-    });
+    if (widget.isEditMode) {
+      _shopId = widget.employee!.shopId;
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _loadUserData(context);
+      });
+    }
   }
 
   Future<void> _loadUserData(BuildContext pageContext) async {
@@ -153,6 +172,50 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
     }
   }
 
+  Future<void> _updateEmployee(BuildContext pageContext) async {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final employee = widget.employee!;
+    setState(() => _isLoading = true);
+    _controller.setLoading(true);
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(employee.userId)
+          .update({
+        'name': _nameController.text.trim(),
+        'phone': _phoneController.text.trim(),
+      });
+
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          const SnackBar(
+            content: Text('Employee updated successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.of(pageContext).pop();
+      }
+    } catch (e) {
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(
+            content: Text('Error updating employee: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+      _controller.setLoading(false);
+    }
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -166,7 +229,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Add Employee'),
+        title: Text(widget.isEditMode ? 'Edit Employee' : 'Add Employee'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -192,10 +255,14 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _emailController,
-                decoration: const InputDecoration(
+                enabled: !widget.isEditMode,
+                decoration: InputDecoration(
                   labelText: 'Email Address',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.email),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.email),
+                  helperText: widget.isEditMode
+                      ? 'Email cannot be changed (tied to sign-in)'
+                      : null,
                 ),
                 keyboardType: TextInputType.emailAddress,
                 validator: (value) {
@@ -227,36 +294,40 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                   return null;
                 },
               ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _passwordController,
-                decoration: InputDecoration(
-                  labelText: 'Password',
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.lock),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility : Icons.visibility_off,
+              if (!widget.isEditMode) ...[
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _passwordController,
+                  decoration: InputDecoration(
+                    labelText: 'Password',
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.lock),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility
+                            : Icons.visibility_off,
+                      ),
+                      onPressed: () {
+                        setState(() {
+                          _obscurePassword = !_obscurePassword;
+                        });
+                      },
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _obscurePassword = !_obscurePassword;
-                      });
-                    },
+                    helperText: 'Minimum 6 characters',
                   ),
-                  helperText: 'Minimum 6 characters',
+                  obscureText: _obscurePassword,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Password is required';
+                    }
+                    if (value.length < 6) {
+                      return 'Password must be at least 6 characters';
+                    }
+                    return null;
+                  },
                 ),
-                obscureText: _obscurePassword,
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return 'Password is required';
-                  }
-                  if (value.length < 6) {
-                    return 'Password must be at least 6 characters';
-                  }
-                  return null;
-                },
-              ),
+              ],
               const SizedBox(height: 32),
               Row(
                 children: [
@@ -277,7 +348,11 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                   Expanded(
                     flex: 2,
                     child: FilledButton(
-                      onPressed: _isLoading ? null : () => _createEmployee(context),
+                      onPressed: _isLoading
+                          ? null
+                          : () => widget.isEditMode
+                              ? _updateEmployee(context)
+                              : _createEmployee(context),
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
@@ -287,7 +362,11 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                               width: 20,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Text('Create Employee'),
+                          : Text(
+                              widget.isEditMode
+                                  ? 'Save Changes'
+                                  : 'Create Employee',
+                            ),
                     ),
                   ),
                 ],

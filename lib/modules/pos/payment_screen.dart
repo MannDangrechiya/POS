@@ -31,6 +31,14 @@ class _PaymentScreenState extends State<PaymentScreen> {
   String? _shopId;
   String? _userId;
 
+  // Requirement in Detail §32.2 "Enable/disable payment methods" — read from
+  // the shop's settings (Settings screen writes these; see settings_screen.dart
+  // _KnownSettingKeys). Default to enabled when unset so existing shops with
+  // no settings configured behave exactly as before this feature existed.
+  bool _cashEnabled = true;
+  bool _upiEnabled = true;
+  bool _cardEnabled = true;
+
   @override
   void initState() {
     super.initState();
@@ -63,6 +71,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           _shopId = userData.shopId;
           _userId = userData.userId;
         });
+        await _loadPaymentMethodSettings(userData.shopId);
       }
     } catch (e) {
       if (pageContext.mounted) {
@@ -70,6 +79,40 @@ class _PaymentScreenState extends State<PaymentScreen> {
           SnackBar(content: Text('Error loading user data: $e')),
         );
       }
+    }
+  }
+
+  Future<void> _loadPaymentMethodSettings(String shopId) async {
+    if (shopId.isEmpty) return;
+    try {
+      // Direct document reads by well-known ID (matches settings_screen.dart's
+      // `_settingIdFor`) — avoids needing a composite index for a query.
+      final db = FirebaseFirestore.instance.collection('settings');
+      final results = await Future.wait([
+        db.doc('shop_${shopId}_payment_cash_enabled').get(),
+        db.doc('shop_${shopId}_payment_upi_enabled').get(),
+        db.doc('shop_${shopId}_payment_card_enabled').get(),
+      ]);
+      if (!mounted) return;
+      setState(() {
+        if (results[0].exists) {
+          _cashEnabled = results[0].data()?['value'] as bool? ?? true;
+        }
+        if (results[1].exists) {
+          _upiEnabled = results[1].data()?['value'] as bool? ?? true;
+        }
+        if (results[2].exists) {
+          _cardEnabled = results[2].data()?['value'] as bool? ?? true;
+        }
+      });
+    } catch (_) {
+      // Non-fatal: keep all payment methods enabled (existing behavior) if
+      // settings can't be read for any reason. Expected in the common case:
+      // Firestore evaluates security rules even for a .get() on a document
+      // that doesn't exist yet (shop never configured these settings), which
+      // surfaces as permission-denied rather than a clean "not found" — that
+      // is normal here, not a rules bug, and the safe default (enabled) is
+      // exactly what should happen until an Admin configures otherwise.
     }
   }
 
@@ -290,41 +333,58 @@ class _PaymentScreenState extends State<PaymentScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    _PaymentMethodCard(
-                      icon: Icons.money,
-                      title: 'Cash',
-                      subtitle: 'Cash payment',
-                      isSelected: _selectedPaymentMethod == 'cash',
-                      onTap: () {
-                        setState(() {
-                          _selectedPaymentMethod = 'cash';
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _PaymentMethodCard(
-                      icon: Icons.account_balance_wallet,
-                      title: 'UPI / Online Payment',
-                      subtitle: 'UPI, PhonePe, Google Pay, etc.',
-                      isSelected: _selectedPaymentMethod == 'upi',
-                      onTap: () {
-                        setState(() {
-                          _selectedPaymentMethod = 'upi';
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    _PaymentMethodCard(
-                      icon: Icons.credit_card,
-                      title: 'Card',
-                      subtitle: 'Debit or Credit Card',
-                      isSelected: _selectedPaymentMethod == 'card',
-                      onTap: () {
-                        setState(() {
-                          _selectedPaymentMethod = 'card';
-                        });
-                      },
-                    ),
+                    if (!_cashEnabled && !_upiEnabled && !_cardEnabled)
+                      Card(
+                        color: colorScheme.errorContainer,
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(
+                            'No payment methods are enabled for this shop. '
+                            'Contact your Admin.',
+                            style: TextStyle(color: colorScheme.onErrorContainer),
+                          ),
+                        ),
+                      ),
+                    if (_cashEnabled) ...[
+                      _PaymentMethodCard(
+                        icon: Icons.money,
+                        title: 'Cash',
+                        subtitle: 'Cash payment',
+                        isSelected: _selectedPaymentMethod == 'cash',
+                        onTap: () {
+                          setState(() {
+                            _selectedPaymentMethod = 'cash';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (_upiEnabled) ...[
+                      _PaymentMethodCard(
+                        icon: Icons.account_balance_wallet,
+                        title: 'UPI / Online Payment',
+                        subtitle: 'UPI, PhonePe, Google Pay, etc.',
+                        isSelected: _selectedPaymentMethod == 'upi',
+                        onTap: () {
+                          setState(() {
+                            _selectedPaymentMethod = 'upi';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (_cardEnabled)
+                      _PaymentMethodCard(
+                        icon: Icons.credit_card,
+                        title: 'Card',
+                        subtitle: 'Debit or Credit Card',
+                        isSelected: _selectedPaymentMethod == 'card',
+                        onTap: () {
+                          setState(() {
+                            _selectedPaymentMethod = 'card';
+                          });
+                        },
+                      ),
                   ],
                 ),
               ),

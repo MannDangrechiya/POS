@@ -309,6 +309,52 @@ class ReportsService {
     };
   }
 
+  /// All-time total revenue from locked orders (Requirement in Detail §25.2 —
+  /// distinct from "today's sales"). Batched the same way as
+  /// [getLockedOrdersInRangeBatched] to avoid Firestore's 'in'/pagination caps
+  /// on large shops.
+  Future<double> getTotalRevenue({String? shopId}) async {
+    Query<Map<String, dynamic>> q = _db
+        .collection('orders')
+        .where('orderStatus', isEqualTo: _ordersLocked);
+    if (shopId != null && shopId.isNotEmpty) {
+      q = q.where('shopId', isEqualTo: shopId);
+    }
+    double total = 0;
+    DocumentSnapshot<Map<String, dynamic>>? cursor;
+    while (true) {
+      // Descending to match the existing (orderStatus, shopId, createdAt DESC)
+      // composite index already used elsewhere in this file — order doesn't
+      // matter for a sum, but reusing the existing index avoids requiring a
+      // new one.
+      var page = q
+          .orderBy('createdAt', descending: true)
+          .limit(FirestorePageSize.posCatalogCap);
+      if (cursor != null) page = page.startAfterDocument(cursor);
+      final snap = await page.get();
+      if (snap.docs.isEmpty) break;
+      for (final doc in snap.docs) {
+        total += (doc.data()['totalAmount'] as num?)?.toDouble() ?? 0;
+      }
+      if (snap.docs.length < FirestorePageSize.posCatalogCap) break;
+      cursor = snap.docs.last;
+    }
+    return total;
+  }
+
+  /// Number of active (status: 'Active') Employees for a shop, for the Admin
+  /// Dashboard's "active employees" metric (Requirement in Detail §25.2).
+  Future<int> getActiveEmployeeCount({required String shopId}) async {
+    final snap = await _db
+        .collection('users')
+        .where('shopId', isEqualTo: shopId)
+        .where('role', isEqualTo: 'Employee')
+        .where('status', isEqualTo: 'Active')
+        .count()
+        .get();
+    return snap.count ?? 0;
+  }
+
   /// Number of products with low stock (0 < stock <= [threshold]).
   static const int defaultLowStockThreshold = 10;
 

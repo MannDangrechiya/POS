@@ -228,9 +228,16 @@ service cloud.firestore {
       request.resource.data.stock is number &&
       request.resource.data.stock >= 0 &&
       // measurementType is permanently immutable — no role (including SuperAdmin) may change it
-      request.resource.data.measurementType == resource.data.measurementType;
-      
-      // Delete rules - DENIED FOR ALL (prevent deletion if product has history)
+      request.resource.data.measurementType == resource.data.measurementType &&
+      // Deletion (status -> 'Deleted') must go through the deleteProduct Cloud
+      // Function (Admin SDK bypasses rules) so it is always audit-logged and
+      // restricted to Super Admin — never settable via a direct client update.
+      request.resource.data.status != 'Deleted';
+
+      // Delete rules - DENIED FOR ALL. Deletion is a soft delete (status ->
+      // 'Deleted') performed only by the deleteProduct Cloud Function
+      // (Super Admin only), never a hard document delete — see
+      // firebase/functions/src/products/deleteProduct.ts for why.
       allow delete: if false;
     }
     
@@ -263,11 +270,17 @@ service cloud.firestore {
       ) &&
       request.resource.data.shopId == resource.data.shopId &&
       request.resource.data.categoryId == resource.data.categoryId;
-      
-      // Delete rules
-      allow delete: if requireAuth() && isUserActive() && isSuperAdmin();
+
+      // Delete rules — Admin has full Write (incl. delete) on their own
+      // shop's categories per TECHNICAL REQUIREMENTS IN DETAIL.md Module 4
+      // ("Admin: Write=All"). Previously restricted to Super Admin only,
+      // which was stricter than the spec.
+      allow delete: if requireAuth() && isUserActive() && (
+        isSuperAdmin() || // Super Admin: delete all
+        (isAdmin() && isSameShop(resource.data.shopId)) // Admin: delete own shop
+      );
     }
-    
+
     // ============================================
     // CUSTOMERS COLLECTION
     // ============================================
@@ -440,12 +453,30 @@ service cloud.firestore {
         isSuperAdmin() || // Super Admin: read only
         (isAdmin() && isSameShop(resource.data.shopId)) // Admin: read only (own shop)
       );
-      
+
       allow create: if false;
       allow update: if false;
       allow delete: if false;
     }
-    
+
+    // ============================================
+    // LOW STOCK ALERTS COLLECTION
+    // ============================================
+    // Created/resolved only by the onProductStockChange trigger (Admin SDK
+    // bypasses rules). Read-only for Admin (own shop) / Super Admin (all) —
+    // Requirement in Detail §27.3 / §34.2.
+
+    match /low_stock_alerts/{alertId} {
+      allow read: if requireAuth() && isUserActive() && (
+        isSuperAdmin() || // Super Admin: read all
+        (isAdmin() && isSameShop(resource.data.shopId)) // Admin: read only (own shop)
+      );
+
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
     // ============================================
     // AUDIT LOGS COLLECTION
     // ============================================
@@ -470,9 +501,17 @@ service cloud.firestore {
       // Read rules
       allow read: if requireAuth() && isUserActive() && (
         isSuperAdmin() || // Super Admin: read all
-        (isAdmin() && resource.data.scope == 'shop' && resource.data.shopId != null && isSameShop(resource.data.shopId)) // Admin: read own shop settings
+        (isAdmin() && resource.data.scope == 'shop' && resource.data.shopId != null && isSameShop(resource.data.shopId)) || // Admin: read own shop settings
+        // Employee: narrow exception, payment-method toggles ONLY (own shop).
+        // The Payment Selection Screen must respect Admin's "Enable/disable
+        // payment methods" setting (Requirement in Detail §32.2), so Employee
+        // needs read access to exactly these 3 keys — not the general
+        // Settings module, which stays fully denied to Employee.
+        (isEmployee() && resource.data.scope == 'shop' && resource.data.shopId != null &&
+         isSameShop(resource.data.shopId) &&
+         resource.data.key in ['payment_cash_enabled', 'payment_upi_enabled', 'payment_card_enabled'])
       );
-      // All others: no access (implicitly denied)
+      // Viewer: no access (implicitly denied)
       
       // Create rules
       allow create: if requireAuth() && isUserActive() && (

@@ -52,6 +52,9 @@ export {
 // Inventory adjustment callable (Admin/SuperAdmin only)
 export { adjustStock } from './inventory/adjustStock';
 
+// Low-stock alert trigger (fires on every product stock change)
+export { onProductStockChange } from './inventory/lowStockAlerts';
+
 // ============================================================================
 // EXPENSE AUDIT FUNCTIONS
 // ============================================================================
@@ -94,6 +97,7 @@ export {
 export {
   recordLoginFailure,
   resetLoginFailure,
+  checkLoginLockout,
 } from './auth/loginLockout';
 
 // Export authentication Firestore triggers
@@ -107,9 +111,15 @@ export { createAdminUser } from './auth/createAdminUser';
 // Admin / Super Admin: create Employee user (Auth + Firestore; caller stays signed in)
 export { createEmployeeUser } from './auth/createEmployeeUser';
 
+// Super Admin only: soft-delete an Employee (status -> 'Deleted')
+export { deleteEmployee } from './auth/deleteEmployee';
+
 // ============================================================================
 // PRODUCT TRIGGERS
 // ============================================================================
 
 // Export product price change trigger
 export { onPriceChange } from './products/onPriceChange';
+
+// Super Admin only: soft-delete a product (status -> 'Deleted')
+export { deleteProduct } from './products/deleteProduct';

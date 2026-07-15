@@ -28,6 +28,12 @@ class UserModel {
   /// Whether this user is suspended
   bool get isSuspended => status == 'Suspended';
 
+  /// Whether this user has been soft-deleted (Super Admin only — see
+  /// deleteEmployee.ts). The Firestore document is kept so historical
+  /// orders/audit logs can still resolve the userId; login is blocked the
+  /// same as any other non-Active status.
+  bool get isDeleted => status == 'Deleted';
+
   /// Normalize role to canonical: SuperAdmin, Admin, Employee, Viewer (matches Firestore/backend)
   static String _normalizeRole(String value) {
     if (value.isEmpty) return '';
@@ -51,6 +57,7 @@ class UserModel {
     if (lower == 'active') return 'Active';
     if (lower == 'inactive') return 'Inactive';
     if (lower == 'suspended') return 'Suspended';
+    if (lower == 'deleted') return 'Deleted';
     return 'Inactive'; // unknown value -> deny by default
   }
 

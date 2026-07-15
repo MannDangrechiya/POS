@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get/get.dart';
 import '../../../core/firestore/firestore_rule_safe_update.dart';
 import '../../../data/models/user_model.dart';
@@ -23,7 +24,10 @@ class EmployeeListScreen extends StatefulWidget {
 class _EmployeeListScreenState extends State<EmployeeListScreen> {
   final EmployeeController _controller = Get.put(EmployeeController());
   String? _shopId;
+  String? _role;
   bool _isLoading = true;
+
+  bool get _isSuperAdmin => _role == 'SuperAdmin';
 
   @override
   void initState() {
@@ -55,6 +59,7 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
         if (!mounted) return;
         setState(() {
           _shopId = userData.shopId;
+          _role = userData.role;
           _isLoading = false;
         });
         _controller.setLoading(false);
@@ -69,6 +74,65 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
       setState(() {
         _isLoading = false;
       });
+      _controller.setLoading(false);
+    }
+  }
+
+  /// Super Admin only. Soft-deletes the employee (status -> 'Deleted') via
+  /// the deleteEmployee Cloud Function so history stays resolvable in past
+  /// orders/audit logs and the deletion is audit-logged (see
+  /// deleteEmployee.ts for rationale).
+  Future<void> _deleteEmployee(
+    BuildContext pageContext,
+    UserModel employee,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: pageContext,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete employee?'),
+        content: Text(
+          'Delete "${employee.name}"? They will no longer be able to log '
+          'in, but their past orders and sales history are preserved.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      _controller.setLoading(true);
+      await FirebaseFunctions.instance.httpsCallable('deleteEmployee').call(
+        <String, dynamic>{
+          'userId': employee.userId,
+          'shopId': employee.shopId,
+        },
+      );
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(content: Text('Employee "${employee.name}" deleted')),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(
+            content: Text('Error deleting employee: ${e.message ?? e.code}'),
+          ),
+        );
+      }
+    } finally {
       _controller.setLoading(false);
     }
   }
@@ -192,7 +256,11 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
                 parse: (data, _) => UserModel.tryFromMap(data),
                 itemKey: (u) => u.userId,
                 filterItems: (items) {
-                  var filtered = items;
+                  // Soft-deleted employees (status: 'Deleted') never appear
+                  // in the management list — only resolvable by ID for
+                  // historical order/audit-log lookups.
+                  var filtered =
+                      items.where((e) => e.status != 'Deleted').toList();
                   final q = _controller.searchQuery.value.trim().toLowerCase();
                   if (q.isNotEmpty) {
                     filtered = filtered
@@ -292,11 +360,29 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
         ),
         trailing: PopupMenuButton<String>(
           onSelected: (value) {
-            if (value == 'toggle') {
+            if (value == 'edit') {
+              GuardedNavigator.push(
+                context,
+                permission: ScreenPermission.employeeForm,
+                page: EmployeeFormScreen(employee: employee),
+              );
+            } else if (value == 'toggle') {
               _toggleEmployeeStatus(context, employee);
+            } else if (value == 'delete') {
+              _deleteEmployee(context, employee);
             }
           },
           itemBuilder: (context) => [
+            const PopupMenuItem(
+              value: 'edit',
+              child: Row(
+                children: [
+                  Icon(Icons.edit, size: 20),
+                  SizedBox(width: 8),
+                  Text('Edit'),
+                ],
+              ),
+            ),
             PopupMenuItem(
               value: 'toggle',
               child: Row(
@@ -307,6 +393,23 @@ class _EmployeeListScreenState extends State<EmployeeListScreen> {
                 ],
               ),
             ),
+            // Delete is Super Admin only (Requirement in Detail §28.2 —
+            // Admin can activate/deactivate but never delete).
+            if (_isSuperAdmin)
+              PopupMenuItem(
+                value: 'delete',
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.delete_outline,
+                      size: 20,
+                      color: colorScheme.error,
+                    ),
+                    const SizedBox(width: 8),
+                    Text('Delete', style: TextStyle(color: colorScheme.error)),
+                  ],
+                ),
+              ),
           ],
         ),
       ),

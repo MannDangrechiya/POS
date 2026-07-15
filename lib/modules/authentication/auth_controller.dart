@@ -27,12 +27,49 @@ class AuthController {
     'logAuthEvent',
   );
 
+  // Login-failure lockout system (no-auth-required callables — see
+  // firebase/functions/src/auth/loginLockout.ts).
+  final HttpsCallable _checkLoginLockout = FirebaseFunctions.instance
+      .httpsCallable('checkLoginLockout');
+  final HttpsCallable _recordLoginFailure = FirebaseFunctions.instance
+      .httpsCallable('recordLoginFailure');
+  final HttpsCallable _resetLoginFailure = FirebaseFunctions.instance
+      .httpsCallable('resetLoginFailure');
+
   /// Login with email and password.
   /// Returns UserModel if successful, throws exception on failure.
   Future<UserModel> login(String email, String password) async {
+    final String trimmedEmail = email.trim();
+
+    // Check lockout status before attempting sign-in at all — a locked
+    // account is disabled at the Firebase Auth level, so attempting sign-in
+    // would just fail with 'user-disabled' without a clear countdown message.
+    try {
+      final lockoutResult = await _checkLoginLockout.call(<String, dynamic>{
+        'email': trimmedEmail,
+      });
+      final data = lockoutResult.data;
+      if (data is Map && data['locked'] == true) {
+        final lockedUntilMs = data['lockedUntil'];
+        if (lockedUntilMs is int) {
+          final until = DateTime.fromMillisecondsSinceEpoch(lockedUntilMs);
+          final minutesLeft = until.difference(DateTime.now()).inMinutes + 1;
+          throw Exception(
+            'Too many failed attempts. Try again in $minutesLeft minute(s).',
+          );
+        }
+        throw Exception(
+          'Too many failed attempts. Please try again later.',
+        );
+      }
+    } on FirebaseFunctionsException catch (e, st) {
+      reportCatch(e, stackTrace: st, tag: 'AuthController.checkLockout');
+      // Non-fatal — fall through and attempt sign-in normally.
+    }
+
     try {
       final UserCredential userCredential = await _auth
-          .signInWithEmailAndPassword(email: email.trim(), password: password);
+          .signInWithEmailAndPassword(email: trimmedEmail, password: password);
 
       final String userId = userCredential.user!.uid;
 
@@ -57,6 +94,7 @@ class AuthController {
       }
 
       if (!user.isActive) {
+        await _logRejectedLoginWhileAuthed(user, 'LOGIN_BLOCKED_STATUS');
         await _endSession();
         if (user.isSuspended) {
           throw Exception(
@@ -69,11 +107,13 @@ class AuthController {
       }
 
       if (user.role.isEmpty) {
+        await _logRejectedLoginWhileAuthed(user, 'LOGIN_BLOCKED_NO_ROLE');
         await _endSession();
         throw Exception('No role assigned. Please contact administrator.');
       }
 
       if (user.role != 'SuperAdmin' && user.shopId.isEmpty) {
+        await _logRejectedLoginWhileAuthed(user, 'LOGIN_BLOCKED_NO_SHOP');
         await _endSession();
         throw Exception('No shop assigned. Please contact administrator.');
       }
@@ -100,6 +140,15 @@ class AuthController {
         });
       } catch (e, st) {
         reportCatch(e, stackTrace: st, tag: 'AuthController.loginAudit');
+      }
+
+      // Clear any accumulated failed-attempt counter now that sign-in
+      // succeeded (also re-enables the Auth account if it had been disabled
+      // by the lockout system and the window has since passed).
+      try {
+        await _resetLoginFailure.call();
+      } catch (e, st) {
+        reportCatch(e, stackTrace: st, tag: 'AuthController.resetLockout');
       }
 
       return user;
@@ -133,15 +182,23 @@ class AuthController {
 
       reportCatch(e, tag: 'AuthController.login');
 
-      // PHASE 5 FIX: LOGIN_FAILURE logged here only — login_screen.dart must NOT
-      // call logLoginFailure separately (different callable name = inconsistency).
+      // BUG FIX: `logAuthEvent` requires context.auth, but at this point sign-in
+      // has just failed (wrong password / unknown user) so there is no
+      // authenticated context — every call here used to throw 'unauthenticated'
+      // and get silently swallowed, meaning failed logins were never audited.
+      // `recordLoginFailure` requires no auth and also drives the account
+      // lockout counter (see firebase/functions/src/auth/loginLockout.ts).
       try {
-        await _logAuthEvent.call(<String, dynamic>{
-          'action': 'LOGIN_FAILURE',
-          'shopId': '',
-          'details': 'Login attempt failed',
+        final result = await _recordLoginFailure.call(<String, dynamic>{
+          'email': trimmedEmail,
         });
-      } catch (auditError, st) {
+        final data = result.data;
+        if (data is Map && data['locked'] == true) {
+          throw Exception(
+            'Too many failed attempts. Your account has been temporarily locked.',
+          );
+        }
+      } on FirebaseFunctionsException catch (auditError, st) {
         reportCatch(auditError, stackTrace: st, tag: 'AuthController.loginFailureAudit');
       }
 
@@ -163,6 +220,23 @@ class AuthController {
     final doc = await _firestore.collection('users').doc(user.uid).get();
     if (!doc.exists) return null;
     return UserModel.tryFromDocument(doc);
+  }
+
+  /// Logs an authentication rejection that happens AFTER Firebase Auth
+  /// sign-in succeeded but BEFORE the app accepts the session (account
+  /// inactive/suspended, no role, no shop assigned). Must run before
+  /// `_endSession()` signs the user out, since `logAuthEvent` requires an
+  /// authenticated context. Previously these rejections were not audited at
+  /// all — §14.1 requires all login attempts, successful or not, be logged.
+  Future<void> _logRejectedLoginWhileAuthed(UserModel user, String action) async {
+    try {
+      await _logAuthEvent.call(<String, dynamic>{
+        'action': action,
+        'shopId': user.shopId.isNotEmpty ? user.shopId : 'unknown',
+      });
+    } catch (e, st) {
+      reportCatch(e, stackTrace: st, tag: 'AuthController.rejectedLoginAudit');
+    }
   }
 
   /// Clears caches/controllers and Firebase auth (no LOGOUT audit).

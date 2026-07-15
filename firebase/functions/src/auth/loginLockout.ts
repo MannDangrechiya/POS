@@ -177,6 +177,108 @@ export const recordLoginFailure = functions.https.onCall(async (data) => {
 });
 
 // ---------------------------------------------------------------------------
+// Callable: checkLoginLockout
+// No auth required — called by client BEFORE attempting Firebase Auth sign-in.
+//
+// BUG THIS FIXES: `resetLoginFailure` requires a successful sign-in to run,
+// but a locked account is disabled at the Firebase Auth level (Admin SDK), so
+// a disabled user can NEVER sign in successfully — resetLoginFailure could
+// never be reached and the account would stay disabled forever after the
+// 15-minute window. This callable performs the time-based auto-unlock
+// (no identity check needed since it only acts once `lockedUntil` has
+// already elapsed) so the client can check-before-attempting, and so the
+// account becomes sign-in-able again once the lockout window passes.
+// ---------------------------------------------------------------------------
+export const checkLoginLockout = functions.https.onCall(async (data) => {
+  const email: string | undefined = data?.email;
+
+  if (!email || typeof email !== 'string' || email.trim() === '') {
+    return { locked: false };
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+
+  const usersSnap = await db
+    .collection('users')
+    .where('email', '==', cleanEmail)
+    .limit(1)
+    .get();
+
+  if (usersSnap.empty) {
+    // Unknown email — do not leak whether the account exists.
+    return { locked: false };
+  }
+
+  const user = usersSnap.docs[0].data() as User;
+  const userId = user.userId;
+
+  const attemptRef = db.collection('login_attempts').doc(userId);
+  const snap = await attemptRef.get();
+  if (!snap.exists) {
+    return { locked: false };
+  }
+
+  const existing = snap.data()!;
+  if (existing.locked !== true) {
+    return { locked: false };
+  }
+
+  const lockedUntil: admin.firestore.Timestamp | null = existing.lockedUntil ?? null;
+  const nowMs = Date.now();
+
+  if (lockedUntil !== null && lockedUntil.toMillis() > nowMs) {
+    // Still within the lockout window.
+    return { locked: true, lockedUntil: lockedUntil.toMillis() };
+  }
+
+  // Lockout window has elapsed — clear the lockout counter regardless (it's
+  // brute-force bookkeeping only), but only re-enable the Firebase Auth
+  // account if the user is still Active in Firestore.
+  //
+  // SECURITY FIX: this function is unauthenticated by design (it must run
+  // before the caller can sign in), so it MUST NOT blindly re-enable an
+  // account — an Admin/Super Admin may have Suspended or (soft-)Deleted this
+  // user (deleteEmployee.ts explicitly disables their Auth account) any time
+  // after the lockout was set. Re-enabling unconditionally would let that
+  // account sign in again once the 15-minute window passes, silently undoing
+  // the admin's action. Only the login-lockout's own disable may be cleared
+  // here, never a status-driven disable.
+  await attemptRef.set(
+    {
+      userId,
+      failureCount: 0,
+      lastFailureAt: null,
+      locked: false,
+      lockedUntil: null,
+    },
+    { merge: false }
+  );
+
+  if (user.status !== 'Active') {
+    return { locked: false };
+  }
+
+  try {
+    const authUser = await admin.auth().getUser(userId);
+    if (authUser.disabled) {
+      await admin.auth().updateUser(userId, { disabled: false });
+      console.log(`Login lockout: auto re-enabled Auth account for ${userId} after lockout window elapsed`);
+
+      await writeLockoutAuditLog(userId, 'login_lockout_expired', {
+        email: user.email,
+        shopId: user.shopId,
+        success: true,
+        note: 'Lockout window elapsed; account auto re-enabled on next login attempt',
+      });
+    }
+  } catch (authErr: any) {
+    console.error(`Failed to auto re-enable Auth account for ${userId}:`, authErr?.message);
+  }
+
+  return { locked: false };
+});
+
+// ---------------------------------------------------------------------------
 // Callable: resetLoginFailure
 // Requires auth — called by client after a SUCCESSFUL Firebase Auth sign-in.
 // Resets the counter and re-enables the Auth account.

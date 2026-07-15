@@ -21,6 +21,7 @@ enum ScreenPermission {
   productForm,
   inventory,
   inventoryAdjustment,
+  lowStockAlerts,
   employeeList,
   employeeForm,
   categoryList,
@@ -107,6 +108,7 @@ class ScreenPermissionPolicy {
         return _orderHistoryRoles;
 
       case ScreenPermission.auditLogs:
+      case ScreenPermission.lowStockAlerts:
         return _adminAndSuperAdmin;
 
       case ScreenPermission.superAdminDashboard:

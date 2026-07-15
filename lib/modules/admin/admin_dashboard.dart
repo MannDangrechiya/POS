@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../core/observability/error_ui.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -7,6 +8,7 @@ import '../authentication/auth_controller.dart';
 import 'admin_controller.dart';
 import '../products/product_list_screen.dart';
 import 'inventory/inventory_screen.dart';
+import 'inventory/low_stock_alerts_screen.dart';
 import '../inventory/inventory_adjustment_screen.dart';
 import 'employees/employee_list_screen.dart';
 import 'categories/category_list_screen.dart';
@@ -40,18 +42,34 @@ class _AdminDashboardState extends State<AdminDashboard> {
   double _todaySales = 0;
   int _todayOrderCount = 0;
   int _lowStockCount = 0;
+  double _totalRevenue = 0;
+  int _activeEmployeeCount = 0;
   List<OrderModel> _recentOrders = [];
+  Timer? _refreshTimer;
+
+  // Requirement in Detail §25.4: "Data refreshes automatically."
+  static const _refreshInterval = Duration(seconds: 30);
 
   @override
   void initState() {
     super.initState();
     _loadUserAndSummary();
+    _refreshTimer = Timer.periodic(
+      _refreshInterval,
+      (_) => _loadUserAndSummary(silent: true),
+    );
   }
 
-  Future<void> _loadUserAndSummary() async {
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadUserAndSummary({bool silent = false}) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      setState(() => _loading = false);
+      if (!silent) setState(() => _loading = false);
       return;
     }
     try {
@@ -61,12 +79,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
           .get();
       if (!mounted) return;
       if (!userDoc.exists) {
-        setState(() => _loading = false);
+        if (!silent) setState(() => _loading = false);
         return;
       }
       final userData = UserModel.tryFromDocument(userDoc);
       if (userData == null) {
-        setState(() => _loading = false);
+        if (!silent) setState(() => _loading = false);
         return;
       }
       final shopId = userData.shopId;
@@ -76,8 +94,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
         shopId: shopId.isEmpty ? null : shopId,
       );
       int lowStock = 0;
+      double totalRevenue = 0;
+      int activeEmployees = 0;
       if (shopId.isNotEmpty) {
         lowStock = await reports.getLowStockCount(shopId: shopId);
+        totalRevenue = await reports.getTotalRevenue(shopId: shopId);
+        activeEmployees = await reports.getActiveEmployeeCount(
+          shopId: shopId,
+        );
+      } else {
+        totalRevenue = await reports.getTotalRevenue();
       }
       final recent = await reports.getRecentLockedOrders(
         shopId: shopId.isEmpty ? null : shopId,
@@ -88,13 +114,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
         _todaySales = (summary['totalSales'] as num?)?.toDouble() ?? 0;
         _todayOrderCount = summary['orderCount'] as int? ?? 0;
         _lowStockCount = lowStock;
+        _totalRevenue = totalRevenue;
+        _activeEmployeeCount = activeEmployees;
         _recentOrders = recent;
         _loading = false;
       });
     } catch (e, st) {
       reportCatch(e, stackTrace: st, tag: 'AdminDashboard._loadDashboard');
       if (!mounted) return;
-      setState(() => _loading = false);
+      if (!silent) setState(() => _loading = false);
     }
   }
 
@@ -206,7 +234,16 @@ class _AdminDashboardState extends State<AdminDashboard> {
             Expanded(
               child: Card(
                 elevation: 2,
-                child: Padding(
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () {
+                    GuardedNavigator.push(
+                      context,
+                      permission: ScreenPermission.lowStockAlerts,
+                      page: const LowStockAlertsScreen(),
+                    );
+                  },
+                  child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -225,6 +262,66 @@ class _AdminDashboardState extends State<AdminDashboard> {
                           color: _lowStockCount > 0
                               ? colorScheme.error
                               : colorScheme.onSurface,
+                        ),
+                      ),
+                    ],
+                  ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Total Revenue',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '₹${_totalRevenue.toStringAsFixed(0)}',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Card(
+                elevation: 2,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Active Employees',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '$_activeEmployeeCount',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ],

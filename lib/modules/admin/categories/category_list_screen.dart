@@ -105,6 +105,58 @@ class _CategoryListScreenState extends State<CategoryListScreen> {
     }
   }
 
+  /// Admin/Super Admin (own shop) may delete a category — Firestore rules
+  /// enforce the role+shop check (TECHNICAL REQUIREMENTS IN DETAIL.md
+  /// Module 4: "Admin: Write=All"). Products referencing this category keep
+  /// their existing categoryId; no cascading delete is performed.
+  Future<void> _deleteCategory(
+    BuildContext pageContext,
+    CategoryModel category,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: pageContext,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete category?'),
+        content: Text(
+          'Delete "${category.name}"? Products already assigned to this '
+          'category will keep their existing link.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(dialogContext).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('categories')
+          .doc(category.categoryId)
+          .delete();
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(content: Text('Category "${category.name}" deleted')),
+        );
+      }
+    } catch (e) {
+      if (pageContext.mounted) {
+        ScaffoldMessenger.of(pageContext).showSnackBar(
+          SnackBar(content: Text('Error deleting category: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -237,6 +289,15 @@ class _CategoryListScreenState extends State<CategoryListScreen> {
                               ),
                             );
                           },
+                        ),
+                        IconButton(
+                          icon: Icon(
+                            Icons.delete_outline,
+                            size: 20,
+                            color: colorScheme.error,
+                          ),
+                          tooltip: 'Delete',
+                          onPressed: () => _deleteCategory(context, category),
                         ),
                       ],
                     ),

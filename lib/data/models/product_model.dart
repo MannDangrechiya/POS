@@ -25,8 +25,11 @@ class ProductModel {
     required this.createdAt,
   });
 
-  /// Whether this product can be sold
-  bool get isActive => status == 'Active';
+  /// Whether this product can be sold.
+  /// Case-insensitive so this is correct regardless of construction path —
+  /// `fromMap` already normalizes casing, but the plain constructor (e.g.
+  /// via `copyWith`) does not, so this getter cannot assume canonical casing.
+  bool get isActive => status.toLowerCase() == 'active';
 
   /// Whether this product is sold by weight (kg/gm)
   bool get isWeightBased => measurementType == 'kg' || measurementType == 'gm';

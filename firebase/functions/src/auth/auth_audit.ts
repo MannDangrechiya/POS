@@ -365,9 +365,38 @@ export const logPasswordResetComplete = functions.https.onCall(async (data, cont
 });
 
 /**
+ * Actions logAuthEvent accepts, and the entityType each is pinned to.
+ * `null` entityType means "auth-only, no entityId/metadata" (original
+ * behavior, unchanged). `'setting'` actions additionally require entityId to
+ * reference a settingId the caller is actually allowed to manage.
+ *
+ * SECURITY: this is an authenticated-but-otherwise-self-service callable, so
+ * without an allow-list any authenticated user (including Employee) could
+ * write an audit_logs entry with an arbitrary action/entityType/entityId and
+ * unbounded metadata — log forgery for compliance/forensic purposes, and a
+ * storage-bloat vector. See docs/AUDIT_REPORT_VS_DOCUMENTATION.md security
+ * review for the finding this fixes.
+ */
+const AUTH_ONLY_ACTIONS = new Set([
+  'LOGIN_SUCCESS',
+  'LOGOUT',
+  'LOGIN_BLOCKED_STATUS',
+  'LOGIN_BLOCKED_NO_ROLE',
+  'LOGIN_BLOCKED_NO_SHOP',
+  'PASSWORD_RESET',
+]);
+const SETTING_ACTIONS = new Set([
+  'SETTING_CREATED',
+  'SETTING_UPDATED',
+  'SETTING_DELETED',
+]);
+const MAX_METADATA_JSON_LENGTH = 2000;
+
+/**
  * Callable: logAuthEvent
  * Only callable by authenticated users. Appends one document to audit_logs.
- * Rejects if unauthenticated, invalid role, or shop mismatch.
+ * Rejects if unauthenticated, invalid role, shop mismatch, or an
+ * unrecognized action (see AUTH_ONLY_ACTIONS / SETTING_ACTIONS above).
  * No update or delete allowed (enforced by Firestore rules).
  */
 export const logAuthEvent = functions.https.onCall(async (data, context) => {
@@ -381,6 +410,15 @@ export const logAuthEvent = functions.https.onCall(async (data, context) => {
   const userId = context.auth.uid;
   const action = validateRequiredString(data?.action, 'action');
   const shopId = validateRequiredString(data?.shopId, 'shopId');
+
+  const isAuthOnly = AUTH_ONLY_ACTIONS.has(action);
+  const isSettingAction = SETTING_ACTIONS.has(action);
+  if (!isAuthOnly && !isSettingAction) {
+    throw new functions.https.HttpsError(
+      'invalid-argument',
+      `Unrecognized action: ${action}`
+    );
+  }
 
   const userDoc = await db.collection('users').doc(userId).get();
   if (!userDoc.exists) {
@@ -414,6 +452,42 @@ export const logAuthEvent = functions.https.onCall(async (data, context) => {
     );
   }
 
+  let entityType = 'AUTH';
+  let entityId: string | undefined;
+  let metadata: Record<string, any> | undefined;
+
+  if (isSettingAction) {
+    entityType = 'setting';
+    entityId = validateRequiredString(data?.entityId, 'entityId');
+
+    // entityId must reference a settingId this caller is actually allowed to
+    // manage — a SuperAdmin's system settings, or this caller's own shop.
+    // Prevents a caller from claiming an audit entry about another shop's
+    // (or a fabricated) setting.
+    const expectedPrefix =
+      user.role === Role.SuperAdmin ? 'system_' : `shop_${user.shopId}_`;
+    if (!entityId.startsWith(expectedPrefix)) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'entityId does not belong to a setting this user may manage'
+      );
+    }
+
+    if (data?.metadata !== undefined) {
+      if (typeof data.metadata !== 'object' || data.metadata === null || Array.isArray(data.metadata)) {
+        throw new functions.https.HttpsError('invalid-argument', 'metadata must be an object');
+      }
+      const serialized = JSON.stringify(data.metadata);
+      if (serialized.length > MAX_METADATA_JSON_LENGTH) {
+        throw new functions.https.HttpsError(
+          'invalid-argument',
+          `metadata too large (max ${MAX_METADATA_JSON_LENGTH} chars serialized)`
+        );
+      }
+      metadata = data.metadata;
+    }
+  }
+
   const logId = db.collection('audit_logs').doc().id;
   const timestamp = admin.firestore.Timestamp.now();
 
@@ -422,8 +496,10 @@ export const logAuthEvent = functions.https.onCall(async (data, context) => {
     role: user.role,
     shopId: user.shopId,
     action,
-    entityType: 'AUTH',
+    entityType,
     timestamp,
+    ...(entityId !== undefined ? { entityId } : {}),
+    ...(metadata !== undefined ? { metadata } : {}),
   });
 
   return { success: true, logId };
@@ -520,9 +596,42 @@ export const onUserStatusChange = functions.firestore
       });
 
       console.log(`User status change logged: ${userId} (${after.email}) - ${before.status} -> ${after.status}`);
-      return null;
     } catch (error: any) {
       console.error(`Error logging user status change for ${userId}:`, error);
-      return null;
     }
+
+    // BUG FIX: reactivating a user in Firestore (e.g. Admin/Super Admin
+    // toggling status back to Active) previously left the Firebase Auth
+    // account disabled if the login-lockout system (recordLoginFailure) had
+    // ever disabled it — there was no path to clear that flag except a
+    // successful sign-in, which is impossible while disabled. Reconcile the
+    // Auth-level disable and the lockout doc whenever status becomes Active.
+    if (after.status === UserStatus.ACTIVE) {
+      try {
+        const authUser = await admin.auth().getUser(userId);
+        if (authUser.disabled) {
+          await admin.auth().updateUser(userId, { disabled: false });
+          console.log(`Reactivation: re-enabled Auth account for ${userId}`);
+        }
+      } catch (authErr: any) {
+        console.error(`Failed to re-enable Auth account for ${userId} on reactivation:`, authErr?.message);
+      }
+
+      try {
+        await db.collection('login_attempts').doc(userId).set(
+          {
+            userId,
+            failureCount: 0,
+            lastFailureAt: null,
+            locked: false,
+            lockedUntil: null,
+          },
+          { merge: false }
+        );
+      } catch (lockErr: any) {
+        console.error(`Failed to clear login_attempts for ${userId} on reactivation:`, lockErr?.message);
+      }
+    }
+
+    return null;
   });
