@@ -130,7 +130,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
           order: order,
           readOnly: widget.readOnly,
           onTap: () => _showOrderDetail(context, order),
-          onCancel: order.isPending && !widget.readOnly
+          onCancel: !order.isCancelled && !widget.readOnly
               ? () => _cancelOrder(context, order)
               : null,
         ),
@@ -145,7 +145,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
       page: OrderDetailScreen(
         order: order,
         readOnly: widget.readOnly,
-        onCancel: order.isPending && !widget.readOnly
+        onCancel: !order.isCancelled && !widget.readOnly
             ? () => _cancelOrder(context, order)
             : null,
       ),

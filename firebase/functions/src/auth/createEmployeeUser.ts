@@ -140,7 +140,7 @@ export const createEmployeeUser = functions.https.onCall(async (data, context) =
       name,
       email,
       phone,
-      role: Role.Employee,
+      role: data?.role === 'Viewer' ? 'Viewer' : Role.Employee,
       shopId,
       status: 'Active',
       createdAt: now,

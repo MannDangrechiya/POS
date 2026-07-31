@@ -81,14 +81,6 @@ export const cancelOrder = functions.https.onCall(async (data, context) => {
         );
       }
 
-      // Prevent cancellation of locked orders
-      if ((order.orderStatus as string) === OrderStatus.locked) {
-        throw new functions.https.HttpsError(
-          'failed-precondition',
-          `Cannot cancel order with status: ${order.orderStatus}. Only pending orders can be cancelled.`
-        );
-      }
-
       // Update order status to cancelled
       transaction.update(orderRef, {
         orderStatus: OrderStatus.cancelled,

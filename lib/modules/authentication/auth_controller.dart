@@ -62,9 +62,12 @@ class AuthController {
           'Too many failed attempts. Please try again later.',
         );
       }
-    } on FirebaseFunctionsException catch (e, st) {
-      reportCatch(e, stackTrace: st, tag: 'AuthController.checkLockout');
-      // Non-fatal — fall through and attempt sign-in normally.
+    } on FirebaseFunctionsException catch (e) {
+      // If lockout check callable fails, log and proceed with normal login
+      AppLogger.debug('Lockout check failed (proceeding): ${e.message}');
+    } catch (e) {
+      // If plugin is missing on desktop (MissingPluginException), log and proceed
+      AppLogger.debug('Lockout check failed non-Firebase error (proceeding): $e');
     }
 
     try {

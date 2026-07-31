@@ -253,6 +253,13 @@ class ReceiptScreen extends StatelessWidget {
                         fontFamily: 'monospace',
                       ),
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Date & Time: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                     const SizedBox(height: 32),
                     // Receipt card
                     Card(

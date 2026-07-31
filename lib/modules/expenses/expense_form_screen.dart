@@ -134,6 +134,7 @@ class _ExpenseFormScreenState extends State<ExpenseFormScreen> {
           'shopId': _shopId!,
           'amount': amount,
           'description': description,
+          'date': _selectedDate.toIso8601String(),
         });
 
         if (pageContext.mounted) {
@@ -149,6 +150,7 @@ class _ExpenseFormScreenState extends State<ExpenseFormScreen> {
           'shopId': _shopId!,
           'amount': amount,
           'description': description,
+          'date': _selectedDate.toIso8601String(),
         });
 
         if (pageContext.mounted) {

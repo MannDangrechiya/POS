@@ -101,6 +101,21 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
         throw Exception('Price must be greater than zero');
       }
 
+      final name = _nameController.text.trim();
+
+      // Check product name uniqueness per shop (§26.4 requirement)
+      final existingQuery = await FirebaseFirestore.instance
+          .collection('products')
+          .where('shopId', isEqualTo: _shopId)
+          .where('name', isEqualTo: name)
+          .get();
+
+      final currentProductId = widget.product?.productId;
+      final duplicates = existingQuery.docs.where((doc) => doc.id != currentProductId);
+      if (duplicates.isNotEmpty) {
+        throw Exception('A product with the name "$name" already exists in this shop.');
+      }
+
       if (_isEditing && widget.product != null) {
         // Update existing product (stock is immutable on client — use adjustStock)
         await FirebaseFirestore.instance

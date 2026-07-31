@@ -81,6 +81,8 @@ class ScreenPermissionPolicy {
         return _employeeOnly;
 
       case ScreenPermission.adminDashboard:
+        return _adminOnly;
+
       case ScreenPermission.productList:
       case ScreenPermission.productForm:
       case ScreenPermission.inventory:
@@ -94,7 +96,7 @@ class ScreenPermissionPolicy {
       case ScreenPermission.customerList:
       case ScreenPermission.customerDetail:
       case ScreenPermission.adminSettings:
-        return _adminOnly;
+        return _adminAndSuperAdmin;
 
       case ScreenPermission.reportsDashboard:
       case ScreenPermission.salesReport:

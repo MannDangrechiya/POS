@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get/get.dart';
 import '../../core/firestore/firestore_rule_safe_update.dart';
 import '../../data/models/product_model.dart';
@@ -305,6 +306,8 @@ class _ProductListScreenState extends State<ProductListScreen> {
               );
             } else if (value == 'toggle') {
               _toggleProductStatus(context, product);
+            } else if (value == 'delete') {
+              _deleteProduct(context, product);
             }
           },
           itemBuilder: (context) => [
@@ -331,9 +334,58 @@ class _ProductListScreenState extends State<ProductListScreen> {
                 ],
               ),
             ),
+            const PopupMenuItem(
+              value: 'delete',
+              child: Row(
+                children: [
+                  Icon(Icons.delete_forever, size: 20, color: Colors.red),
+                  SizedBox(width: 8),
+                  Text('Delete', style: TextStyle(color: Colors.red)),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _deleteProduct(BuildContext pageContext, ProductModel product) async {
+    final confirm = await showDialog<bool>(
+      context: pageContext,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Product'),
+        content: Text('Are you sure you want to soft-delete "${product.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !pageContext.mounted) return;
+
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable('deleteProduct');
+      await callable.call(<String, dynamic>{
+        'productId': product.productId,
+        'shopId': product.shopId,
+      });
+      if (!pageContext.mounted) return;
+      ScaffoldMessenger.of(pageContext).showSnackBar(
+        const SnackBar(content: Text('Product deleted successfully')),
+      );
+    } catch (e) {
+      if (!pageContext.mounted) return;
+      ScaffoldMessenger.of(pageContext).showSnackBar(
+        SnackBar(content: Text('Failed to delete product: $e')),
+      );
+    }
   }
 }

@@ -38,6 +38,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
   );
   final _passwordController = TextEditingController();
   String? _shopId;
+  String _selectedRole = 'Employee';
   bool _isLoading = false;
   bool _obscurePassword = true;
 
@@ -110,6 +111,7 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
         'name': _nameController.text.trim(),
         'email': _emailController.text.trim(),
         'phone': _phoneController.text.trim(),
+        'role': _selectedRole,
         'shopId': _shopId!,
         'password': _passwordController.text,
       });
@@ -295,6 +297,26 @@ class _EmployeeFormScreenState extends State<EmployeeFormScreen> {
                 },
               ),
               if (!widget.isEditMode) ...[
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedRole,
+                  decoration: const InputDecoration(
+                    labelText: 'User Role',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.badge),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'Employee', child: Text('Employee (POS Billing)')),
+                    DropdownMenuItem(value: 'Viewer', child: Text('Viewer (Read-Only Reports)')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() {
+                        _selectedRole = val;
+                      });
+                    }
+                  },
+                ),
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _passwordController,

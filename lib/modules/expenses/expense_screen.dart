@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get/get.dart';
 import '../../data/models/expense_model.dart';
 import '../../widgets/firestore_paginated_list.dart';
@@ -185,12 +186,52 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
             Text('Date: $dateFormat at $timeFormat'),
           ],
         ),
-        trailing: Text(
-          '₹${expense.amount.toStringAsFixed(2)}',
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.bold,
-                color: colorScheme.error,
-              ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '₹${expense.amount.toStringAsFixed(2)}',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.error,
+                  ),
+            ),
+            PopupMenuButton<String>(
+              onSelected: (val) {
+                if (val == 'edit') {
+                  GuardedNavigator.push(
+                    context,
+                    permission: ScreenPermission.expenseForm,
+                    page: ExpenseFormScreen(expense: expense),
+                  );
+                } else if (val == 'delete') {
+                  _deleteExpense(context, expense);
+                }
+              },
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'edit',
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit, size: 20),
+                      SizedBox(width: 8),
+                      Text('Edit'),
+                    ],
+                  ),
+                ),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_forever, size: 20, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text('Delete', style: TextStyle(color: Colors.red)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
         onTap: () {
           GuardedNavigator.push(
@@ -201,5 +242,45 @@ class _ExpenseScreenState extends State<ExpenseScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _deleteExpense(BuildContext pageContext, ExpenseModel expense) async {
+    final confirm = await showDialog<bool>(
+      context: pageContext,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Expense'),
+        content: Text('Are you sure you want to delete this expense of ₹${expense.amount.toStringAsFixed(2)}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !pageContext.mounted) return;
+
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable('createOrUpdateExpense');
+      await callable.call(<String, dynamic>{
+        'action': 'delete',
+        'expenseId': expense.expenseId,
+        'shopId': expense.shopId,
+      });
+      if (!pageContext.mounted) return;
+      ScaffoldMessenger.of(pageContext).showSnackBar(
+        const SnackBar(content: Text('Expense deleted successfully')),
+      );
+    } catch (e) {
+      if (!pageContext.mounted) return;
+      ScaffoldMessenger.of(pageContext).showSnackBar(
+        SnackBar(content: Text('Failed to delete expense: $e')),
+      );
+    }
   }
 }
