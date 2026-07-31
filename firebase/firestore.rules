@@ -55,13 +55,7 @@ service cloud.firestore {
     function isValidStatus(status) {
       return status == 'Active' || status == 'Inactive' || status == 'Suspended';
     }
-    function isValidOrderStatus(orderStatus) {
-      return orderStatus == 'pending' || orderStatus == 'locked' || orderStatus == 'cancelled';
-    }
-    function isValidPaymentStatus(paymentStatus) {
-      return paymentStatus == 'Success' || paymentStatus == 'Pending' || paymentStatus == 'Failed';
-    }
-    
+
     // Check if user is Super Admin
     function isSuperAdmin() {
       return normalizedRole(getUserRole());
