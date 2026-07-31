@@ -90,25 +90,23 @@ class _AdminDashboardState extends State<AdminDashboard> {
       final shopId = userData.shopId;
 
       final reports = ReportsService();
-      final summary = await reports.getTodaySalesSummary(
-        shopId: shopId.isEmpty ? null : shopId,
-      );
+      // An Admin always has a shopId; an empty one means a misconfigured
+      // account, not "show all shops" -- never fall back to the cross-shop
+      // sentinel here (that's reserved for Super Admin views).
+      Map<String, dynamic> summary = const {'totalSales': 0, 'orderCount': 0};
       int lowStock = 0;
       double totalRevenue = 0;
       int activeEmployees = 0;
+      List<OrderModel> recent = [];
       if (shopId.isNotEmpty) {
+        summary = await reports.getTodaySalesSummary(shopId: shopId);
         lowStock = await reports.getLowStockCount(shopId: shopId);
         totalRevenue = await reports.getTotalRevenue(shopId: shopId);
         activeEmployees = await reports.getActiveEmployeeCount(
           shopId: shopId,
         );
-      } else {
-        totalRevenue = await reports.getTotalRevenue();
+        recent = await reports.getRecentLockedOrders(shopId: shopId, limit: 5);
       }
-      final recent = await reports.getRecentLockedOrders(
-        shopId: shopId.isEmpty ? null : shopId,
-        limit: 5,
-      );
       if (!mounted) return;
       setState(() {
         _todaySales = (summary['totalSales'] as num?)?.toDouble() ?? 0;

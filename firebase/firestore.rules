@@ -112,11 +112,15 @@ service cloud.firestore {
     // ============================================
     
     match /users/{userId} {
-      // Read rules
-      allow read: if requireAuth() && isUserActive() && (
-        isSuperAdmin() || // Super Admin: read all
-        (isAdmin() && isSameShop(resource.data.shopId)) || // Admin: read users in same shop
-        (isEmployee() && isOwner(userId)) // Employee: read own user document only
+      // Read rules - own doc always readable (even if Suspended/Inactive) so
+      // the client can detect and surface its own blocked status; other
+      // users only visible to active Super Admin/Admin.
+      allow read: if requireAuth() && (
+        isOwner(userId) ||
+        (isUserActive() && (
+          isSuperAdmin() || // Super Admin: read all
+          (isAdmin() && isSameShop(resource.data.shopId)) // Admin: read users in same shop
+        ))
       );
       // Viewer: no access (implicitly denied)
       
@@ -344,39 +348,14 @@ service cloud.firestore {
         (isViewer() && isSameShop(resource.data.shopId)) // Viewer: read only
       );
       
-      // Create rules - Only Employees can create orders
-      allow create: if requireAuth() && isUserActive() && 
-      isEmployee() && 
-      validateShopId(request.resource.data.shopId) &&
-      // Validate required fields
-      request.resource.data.keys().hasAll(['orderId', 'shopId', 'customerId', 'employeeId', 'totalAmount', 'paymentMethod', 'paymentStatus', 'orderStatus', 'createdAt']) &&
-      request.resource.data.orderId == orderId &&
-      request.resource.data.employeeId == request.auth.uid &&
-      request.resource.data.shopId is string &&
-      request.resource.data.customerId is string &&
-      request.resource.data.totalAmount is number &&
-      request.resource.data.totalAmount > 0 &&
-      request.resource.data.paymentStatus == 'Success' &&
-      request.resource.data.createdAt is timestamp &&
-      // Canonical enum validation (reject unknown values)
-      isValidOrderStatus(request.resource.data.orderStatus) &&
-      isValidPaymentStatus(request.resource.data.paymentStatus);
-      
-      // Update rules - prevent update if orderStatus == locked; only assigned employee can update pending orders
-      allow update: if requireAuth() && isUserActive() &&
-      resource.data.orderStatus != 'locked' &&
-      isEmployee() &&
-      isSameShop(resource.data.shopId) &&
-      resource.data.employeeId == request.auth.uid &&
-      validateShopId(request.resource.data.shopId) &&
-      request.resource.data.orderId == resource.data.orderId &&
-      request.resource.data.employeeId == resource.data.employeeId &&
-      request.resource.data.createdAt == resource.data.createdAt &&
-      request.resource.data.shopId == resource.data.shopId &&
-      request.resource.data.orderStatus == resource.data.orderStatus &&
-      isValidOrderStatus(request.resource.data.orderStatus) &&
-      isValidPaymentStatus(request.resource.data.paymentStatus);
-      
+      // Create/update rules - orders are created and locked exclusively by
+      // the confirmOrder/cancelOrder Cloud Functions (Admin SDK, bypasses
+      // these rules). No client code path writes to this collection anymore
+      // -- allowing client create would let an Employee forge a fully-locked
+      // fake sale with an arbitrary amount, skipping stock deduction and audit.
+      allow create: if false;
+      allow update: if false;
+
       // Delete rules - prevent delete entirely
       allow delete: if false;
     }
@@ -397,25 +376,11 @@ service cloud.firestore {
          isSameShop(get(/databases/$(database)/documents/orders/$(resource.data.orderId)).data.shopId)) // Viewer: read only
       );
       
-      // Create rules - Only Employees can create order items
-      allow create: if requireAuth() && isUserActive() && 
-      isEmployee() &&
-      exists(/databases/$(database)/documents/orders/$(request.resource.data.orderId)) &&
-      isOwner(get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.employeeId) &&
-      // Validate required fields
-      request.resource.data.keys().hasAll(['orderItemId', 'orderId', 'shopId', 'productId', 'quantityOrWeight', 'priceSnapshot', 'totalPrice']) &&
-      request.resource.data.orderItemId == orderItemId &&
-      request.resource.data.orderId is string &&
-      request.resource.data.shopId is string &&
-      request.resource.data.shopId == get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.shopId &&
-      request.resource.data.productId is string &&
-      request.resource.data.quantityOrWeight is number &&
-      request.resource.data.quantityOrWeight > 0 &&
-      request.resource.data.priceSnapshot is number &&
-      request.resource.data.priceSnapshot > 0 &&
-      request.resource.data.totalPrice is number &&
-      request.resource.data.totalPrice > 0;
-      
+      // Create rules - order items are written exclusively by the
+      // confirmOrder Cloud Function (Admin SDK, bypasses these rules); no
+      // client code path writes here.
+      allow create: if false;
+
       // Update rules - NO UPDATES ALLOWED (immutable after creation)
       allow update: if false;
       
