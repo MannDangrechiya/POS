@@ -1,0 +1,89 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "POS System End-to-End Fixing Plan",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "phase-1",
+        "label": "Phase 1: Roles & Auth",
+        "focus": ["role_client", "role_funcs", "role_rules"],
+        "note": "Unifying role strings and fixing authentication audit logs."
+      },
+      {
+        "id": "phase-2",
+        "label": "Phase 2: Orders & Checkout",
+        "focus": ["order_client", "confirm_order"],
+        "note": "Fixing the broken order confirmation flow and shopId payload."
+      },
+      {
+        "id": "phase-3",
+        "label": "Phase 3: Expense Architecture",
+        "focus": ["expense_client", "expense_funcs", "expense_rules"],
+        "note": "Routing expenses through Cloud Functions instead of direct writes."
+      }
+    ],
+    "output": "pos-fixing-plan-rendered.html"
+  },
+  "lanes": [
+    { "id": "frontend", "label": "Flutter App" },
+    { "id": "backend", "label": "Cloud Functions" },
+    { "id": "database", "label": "Firestore & Rules" }
+  ],
+  "phases": [
+    { "id": "p1", "label": "Phase 1: Auth & Roles", "fromCol": 0, "toCol": 1 },
+    { "id": "p2", "label": "Phase 2: Orders", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "p3", "label": "Phase 3: Expenses", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "auth_group", "label": "Role Consistency", "lane": "database", "fromCol": 0, "toCol": 1, "variant": "emphasis" },
+    { "id": "order_group", "label": "Checkout Flow", "lane": "backend", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "expense_group", "label": "Expense Routing", "lane": "backend", "fromCol": 4, "toCol": 5, "variant": "emphasis" }
+  ],
+  "mainPath": ["role_client", "role_funcs", "order_client", "confirm_order", "expense_client", "expense_funcs", "expense_rules", "final_verify"],
+  "nodes": [
+    { "id": "role_client", "lane": "frontend", "col": 0, "type": "frontend", "label": "Auth Client", "sublabel": "fix role strings & logs", "width": 140 },
+    { "id": "role_rules", "lane": "database", "col": 0, "type": "security", "label": "Firestore Rules", "sublabel": "validate roles", "width": 140 },
+    { "id": "role_funcs", "lane": "backend", "col": 1, "type": "backend", "label": "Auth Functions", "sublabel": "unify status logic", "width": 140 },
+    
+    { "id": "order_client", "lane": "frontend", "col": 2, "type": "frontend", "label": "Payment Screen", "sublabel": "set status: success", "width": 140 },
+    { "id": "confirm_order", "lane": "backend", "col": 3, "type": "backend", "label": "Confirm Order", "sublabel": "accept shopId & verify", "width": 140 },
+    
+    { "id": "expense_client", "lane": "frontend", "col": 4, "type": "frontend", "label": "Expense Screen", "sublabel": "call CF callables", "width": 140 },
+    { "id": "expense_funcs", "lane": "backend", "col": 4, "type": "backend", "label": "Expense CF", "sublabel": "audit & validate", "width": 140 },
+    { "id": "expense_rules", "lane": "database", "col": 5, "type": "security", "label": "Expense Rules", "sublabel": "enforce schema", "width": 140 },
+    
+    { "id": "final_verify", "lane": "frontend", "col": 5, "type": "external", "label": "End-to-End Test", "sublabel": "verify system", "width": 140 }
+  ],
+  "edges": [
+    { "id": "auth-to-funcs", "from": "role_client", "to": "role_funcs", "label": "login/logout", "variant": "emphasis" },
+    { "id": "rules-to-funcs", "from": "role_rules", "to": "role_funcs", "variant": "dashed" },
+    { "id": "funcs-to-order", "from": "role_funcs", "to": "order_client", "variant": "default" },
+    { "id": "order-to-confirm", "from": "order_client", "to": "confirm_order", "label": "call CF", "variant": "emphasis" },
+    { "id": "confirm-to-expense", "from": "confirm_order", "to": "expense_client", "variant": "default" },
+    { "id": "expense-client-to-cf", "from": "expense_client", "to": "expense_funcs", "label": "route write", "variant": "emphasis" },
+    { "id": "expense-cf-to-rules", "from": "expense_funcs", "to": "expense_rules", "label": "write to db", "variant": "emphasis" },
+    { "id": "expense-cf-to-verify", "from": "expense_rules", "to": "final_verify", "variant": "default" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Critical Path Fixes",
+      "items": [
+        "Order Confirmation is currently broken. Fixing payment status and shopId is the top priority.",
+        "Role mismatch causes valid operations to fail."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Architecture & Compliance",
+      "items": [
+        "Expenses must be routed through Cloud Functions for auditing.",
+        "Auth audit logs (login/logout) must be triggered from the client."
+      ]
+    }
+  ]
+}
