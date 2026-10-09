@@ -254,12 +254,14 @@ class AuthController {
     try {
       final userModel = await getCurrentUserModel();
       final shopId = userModel?.shopId ?? '';
-      await _logAuthEvent.call(<String, dynamic>{
-        'action': 'LOGOUT',
-        'shopId': shopId,
-      });
-    } catch (e, st) {
-      reportCatch(e, stackTrace: st, tag: 'AuthController.logoutAudit');
+      if (_auth.currentUser != null && shopId.isNotEmpty) {
+        await _logAuthEvent.call(<String, dynamic>{
+          'action': 'LOGOUT',
+          'shopId': shopId,
+        });
+      }
+    } catch (e) {
+      AppLogger.debug('Logout audit skipped or non-fatal: $e', tag: 'AuthController');
     }
     AppLogger.info('User signed out', tag: 'AuthController');
     await _endSession();
