@@ -53,6 +53,7 @@ dependencies:
   # PDF generation and printing for receipts
   pdf: ^3.11.0
   printing: ^5.13.1
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:
