@@ -437,6 +437,38 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "shifts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "shopId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "cashierId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "credit_ledgers",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "customerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
