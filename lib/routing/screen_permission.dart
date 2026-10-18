@@ -14,6 +14,8 @@ enum ScreenPermission {
   scanProduct,
   receipt,
   dailySalesSummary,
+  returns,
+  customerLedger,
 
   // ── Admin shop management ───────────────────────────────────────────────────
   adminDashboard,
@@ -31,6 +33,8 @@ enum ScreenPermission {
   customerList,
   customerDetail,
   adminSettings,
+  hardwareSettings,
+  customerFacingDisplay,
 
   // ── Reports & orders (read-heavy; role-scoped data in Firestore) ───────────
   reportsDashboard,
@@ -96,7 +100,13 @@ class ScreenPermissionPolicy {
       case ScreenPermission.customerList:
       case ScreenPermission.customerDetail:
       case ScreenPermission.adminSettings:
+      case ScreenPermission.hardwareSettings:
         return _adminAndSuperAdmin;
+
+      case ScreenPermission.customerFacingDisplay:
+      case ScreenPermission.returns:
+      case ScreenPermission.customerLedger:
+        return const {'Employee', 'Admin', 'SuperAdmin'};
 
       case ScreenPermission.reportsDashboard:
       case ScreenPermission.salesReport:

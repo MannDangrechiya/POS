@@ -517,6 +517,60 @@ service cloud.firestore {
     }
 
     // ============================================
+    // SHIFTS COLLECTION
+    // ============================================
+    // Shift lifecycle: open float, cash movements, blind close, Z-report.
+    match /shifts/{shiftId} {
+      allow read: if requireAuth() && isUserActive() && (
+        isSuperAdmin() ||
+        (isAdmin() && isSameShop(resource.data.shopId)) ||
+        (isEmployee() && isSameShop(resource.data.shopId))
+      );
+      allow create: if requireAuth() && isUserActive() && (
+        isSuperAdmin() ||
+        ((isAdmin() || isEmployee()) && validateShopId(request.resource.data.shopId) && request.resource.data.cashierId == request.auth.uid)
+      );
+      allow update: if requireAuth() && isUserActive() && (
+        isSuperAdmin() ||
+        (isAdmin() && isSameShop(resource.data.shopId)) ||
+        (isEmployee() && isSameShop(resource.data.shopId) && resource.data.cashierId == request.auth.uid)
+      );
+      allow delete: if requireAuth() && isUserActive() && isSuperAdmin();
+    }
+
+    // ============================================
+    // REFUNDS COLLECTION
+    // ============================================
+    // Refund records: created exclusively by processRefund Cloud Function (Admin SDK).
+    match /refunds/{refundId} {
+      allow read: if requireAuth() && isUserActive() && (
+        isSuperAdmin() ||
+        (isAdmin() && isSameShop(resource.data.shopId)) ||
+        (isEmployee() && isSameShop(resource.data.shopId)) ||
+        (isViewer() && isSameShop(resource.data.shopId))
+      );
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================
+    // CREDIT LEDGERS COLLECTION (Khata / Udhar)
+    // ============================================
+    // Created exclusively by confirmOrder & settleCustomerCredit Cloud Functions.
+    match /credit_ledgers/{ledgerId} {
+      allow read: if requireAuth() && isUserActive() && (
+        isSuperAdmin() ||
+        (isAdmin() && isSameShop(resource.data.shopId)) ||
+        (isEmployee() && isSameShop(resource.data.shopId)) ||
+        (isViewer() && isSameShop(resource.data.shopId))
+      );
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================
     // DEFAULT DENY RULE
     // ============================================
     

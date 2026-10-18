@@ -11,6 +11,8 @@ import '../../core/rbac/role_constants.dart';
 import '../../core/firestore/firestore_stream_cache.dart';
 import '../../routing/permission_gate.dart';
 import '../../routing/screen_permission.dart';
+import '../../routing/guarded_navigator.dart';
+import '../settings/hardware_settings_screen.dart';
 
 /// Well-known shop-level setting keys with dedicated UI (Requirement in
 /// Detail §32.2: "Change tax rules", "Enable/disable payment methods",
@@ -527,6 +529,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 v,
                 oldValue: autoPrint,
               ),
+            ),
+            const Divider(height: 32),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                Icons.devices_other_rounded,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              title: const Text('Hardware Peripherals & Devices'),
+              subtitle: const Text(
+                'Thermal printer, cash drawer, digital scale & CFD',
+              ),
+              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+              onTap: () {
+                GuardedNavigator.push(
+                  context,
+                  permission: ScreenPermission.hardwareSettings,
+                  page: const HardwareSettingsScreen(),
+                );
+              },
             ),
           ],
         ),

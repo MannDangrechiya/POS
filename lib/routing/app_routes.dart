@@ -22,6 +22,10 @@ class AppRoutes {
   static const String superAdminDashboard  = '/super-admin-dashboard';
   static const String viewerDashboard      = '/viewer-dashboard';
 
+  // ── Hardware & Peripherals ────────────────────────────────────────────────
+  static const String hardwareSettings     = '/hardware-settings';
+  static const String customerFacingDisplay = '/cfd';
+
   /// All route names that require authentication and role validation.
   static const List<String> protectedRoutes = [
     employee,

@@ -12,6 +12,7 @@ class OrderModel {
   final String paymentMethod; // Cash, UPI, Card
   final String paymentStatus; // Success
   final String orderStatus; // pending, locked, cancelled (canonical)
+  final String terminalId; // register / terminal identifier
   final DateTime createdAt; // immutable
 
   const OrderModel({
@@ -25,6 +26,7 @@ class OrderModel {
     required this.paymentMethod,
     required this.paymentStatus,
     required this.orderStatus,
+    this.terminalId = '',
     required this.createdAt,
   });
 
@@ -49,6 +51,7 @@ class OrderModel {
       paymentMethod: FirestoreParse.stringField(map['paymentMethod']),
       paymentStatus: FirestoreParse.stringField(map['paymentStatus']),
       orderStatus: FirestoreParse.stringField(map['orderStatus']),
+      terminalId: FirestoreParse.stringField(map['terminalId']),
       createdAt: FirestoreParse.dateTimeField(map['createdAt']),
     );
   }
@@ -80,6 +83,7 @@ class OrderModel {
       'paymentMethod': paymentMethod,
       'paymentStatus': paymentStatus,
       'orderStatus': orderStatus,
+      'terminalId': terminalId,
       'createdAt': Timestamp.fromDate(createdAt),
     };
   }

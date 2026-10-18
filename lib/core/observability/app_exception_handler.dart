@@ -11,14 +11,27 @@ class AppExceptionHandler {
   AppExceptionHandler._();
 
   static Future<void> initialize() async {
-    await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(
-      kReleaseMode,
-    );
-    ErrorReporter.instance.markCrashlyticsReady();
+    final bool isCrashlyticsSupported = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.macOS);
+
+    if (isCrashlyticsSupported) {
+      try {
+        await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(
+          kReleaseMode,
+        );
+        ErrorReporter.instance.markCrashlyticsReady();
+      } catch (_) {
+        // Non-fatal if Crashlytics fails to bind or is not supported
+      }
+    }
 
     FlutterError.onError = (FlutterErrorDetails details) {
-      if (kReleaseMode) {
-        FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+      if (kReleaseMode && isCrashlyticsSupported) {
+        try {
+          FirebaseCrashlytics.instance.recordFlutterFatalError(details);
+        } catch (_) {}
       }
       ErrorReporter.instance.report(
         details.exception,

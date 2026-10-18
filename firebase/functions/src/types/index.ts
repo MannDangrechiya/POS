@@ -99,6 +99,8 @@ export interface Customer {
   shopId: string;
   name: string;
   mobile: string;
+  creditLimit?: number;
+  currentBalance?: number;
   createdAt: FirebaseFirestore.Timestamp;
 }
 

@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'controllers/cart_controller.dart';
+import 'controllers/shift_controller.dart';
+import 'widgets/discount_dialog.dart';
+import 'widgets/open_shift_dialog.dart';
 import 'quantity_selection_dialog.dart';
 import 'customer_screen.dart';
 import '../../routing/guarded_navigator.dart';
@@ -149,30 +154,130 @@ class CartScreen extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        'Subtotal',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
+                        'Subtotal (${cartController.itemCount} items)',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: Colors.grey.shade600,
                         ),
                       ),
                       Text(
-                        '₹${cartController.totalAmount.toStringAsFixed(2)}',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
+                        '₹${cartController.subtotal.toStringAsFixed(2)}',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
+
+                  // Discount Row
+                  if (cartController.discountAmount.value > 0) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Discount (${cartController.discountReason.value})',
+                          style: TextStyle(color: Colors.indigo.shade700, fontWeight: FontWeight.w600),
+                        ),
+                        Text(
+                          '-₹${cartController.discountAmount.value.toStringAsFixed(2)}',
+                          style: TextStyle(color: Colors.indigo.shade700, fontWeight: FontWeight.bold),
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  // Tax Row
+                  if (cartController.taxAmount > 0) ...[
+                    const SizedBox(height: 4),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'GST (${cartController.taxRatePercent.value.toStringAsFixed(0)}%)',
+                          style: TextStyle(color: Colors.grey.shade600),
+                        ),
+                        Text(
+                          '+₹${cartController.taxAmount.toStringAsFixed(2)}',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'TOTAL DUE',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        '₹${cartController.totalAmount.toStringAsFixed(2)}',
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                          color: colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Apply Discount Button
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            showDialog(
+                              context: context,
+                              builder: (_) => DiscountDialog(cartController: cartController),
+                            );
+                          },
+                          icon: const Icon(Icons.discount_outlined, size: 18),
+                          label: Text(cartController.discountAmount.value > 0 ? 'Edit Discount' : 'Apply Discount'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+
                   // Checkout button
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: () {
-                        GuardedNavigator.push(
-                          context,
-                          permission: ScreenPermission.customerSelect,
-                          page: const CustomerScreen(),
-                        );
+                      onPressed: () async {
+                        final shiftCtrl = ShiftController.instance;
+                        if (!shiftCtrl.hasActiveShift) {
+                          final user = FirebaseAuth.instance.currentUser;
+                          if (user != null) {
+                            final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+                            final cashierName = userDoc.data()?['name'] ?? user.email ?? 'Cashier';
+                            final shopId = userDoc.data()?['shopId'] ?? '';
+
+                            if (context.mounted) {
+                              final opened = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => OpenShiftDialog(
+                                  shopId: shopId,
+                                  cashierId: user.uid,
+                                  cashierName: cashierName,
+                                ),
+                              );
+                              if (opened != true) return;
+                            }
+                          }
+                        }
+
+                        if (context.mounted) {
+                          GuardedNavigator.push(
+                            context,
+                            permission: ScreenPermission.customerSelect,
+                            page: const CustomerScreen(),
+                          );
+                        }
                       },
                       icon: const Icon(Icons.arrow_forward),
                       label: Text(

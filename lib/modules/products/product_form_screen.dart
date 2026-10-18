@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../core/firestore/firestore_rule_safe_update.dart';
 import '../../data/models/product_model.dart';
 import '../../data/models/user_model.dart';
+import '../../core/hardware/printer_service.dart';
 
 /// Product Form Screen - Add or Edit Product
 /// Allows Admin to create new products or edit existing ones
@@ -19,7 +20,9 @@ class ProductFormScreen extends StatefulWidget {
 class _ProductFormScreenState extends State<ProductFormScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
+  final _barcodeController = TextEditingController();
   final _priceController = TextEditingController();
+  final _costPriceController = TextEditingController();
   final _stockController = TextEditingController();
   String? _shopId;
   String _measurementType = 'kg';
@@ -34,7 +37,11 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     _isEditing = widget.product != null;
     if (_isEditing && widget.product != null) {
       _nameController.text = widget.product!.name;
+      _barcodeController.text = widget.product!.barcode;
       _priceController.text = widget.product!.price.toString();
+      _costPriceController.text = widget.product!.costPrice > 0
+          ? widget.product!.costPrice.toString()
+          : '';
       _stockController.text = widget.product!.stock.toString();
       _measurementType = widget.product!.measurementType;
     }
@@ -102,6 +109,7 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
       }
 
       final name = _nameController.text.trim();
+      final barcode = _barcodeController.text.trim();
 
       // Check product name uniqueness per shop (§26.4 requirement)
       final existingQuery = await FirebaseFirestore.instance
@@ -116,6 +124,25 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
         throw Exception('A product with the name "$name" already exists in this shop.');
       }
 
+      // Check barcode uniqueness if barcode provided
+      if (barcode.isNotEmpty) {
+        final existingBarcodeQuery = await FirebaseFirestore.instance
+            .collection('products')
+            .where('shopId', isEqualTo: _shopId)
+            .where('barcode', isEqualTo: barcode)
+            .get();
+
+        final duplicateBarcodes =
+            existingBarcodeQuery.docs.where((doc) => doc.id != currentProductId);
+        if (duplicateBarcodes.isNotEmpty) {
+          throw Exception(
+            'A product with barcode "$barcode" already exists in this shop.',
+          );
+        }
+      }
+
+      final costPrice = double.tryParse(_costPriceController.text.trim()) ?? 0.0;
+
       if (_isEditing && widget.product != null) {
         // Update existing product (stock is immutable on client — use adjustStock)
         await FirebaseFirestore.instance
@@ -126,7 +153,9 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                 widget.product!,
                 changes: {
                   'name': _nameController.text.trim(),
+                  'barcode': barcode,
                   'price': price,
+                  'costPrice': costPrice,
                 },
               ),
             );
@@ -156,7 +185,9 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
           'productId': productId,
           'shopId': _shopId!,
           'name': _nameController.text.trim(),
+          'barcode': barcode,
           'price': price,
+          'costPrice': costPrice,
           'measurementType': _measurementType,
           'stock': stock,
           'status': 'Active',
@@ -188,7 +219,9 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
   @override
   void dispose() {
     _nameController.dispose();
+    _barcodeController.dispose();
     _priceController.dispose();
+    _costPriceController.dispose();
     _stockController.dispose();
     super.dispose();
   }
@@ -198,6 +231,32 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditing ? 'Edit Product' : 'Add Product'),
+        actions: [
+          if (_isEditing && widget.product != null)
+            IconButton(
+              icon: const Icon(Icons.qr_code_2),
+              tooltip: 'Print Barcode Label',
+              onPressed: () async {
+                final p = widget.product!;
+                final ok = await PrinterService.instance.printProductLabel(
+                  productName: p.name,
+                  price: p.price,
+                  barcode: p.barcode.isNotEmpty ? p.barcode : p.productId,
+                  unit: p.measurementType,
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(ok
+                          ? 'Barcode label printed for ${p.name}'
+                          : 'Failed to print label'),
+                      backgroundColor: ok ? Colors.green : Colors.red,
+                    ),
+                  );
+                }
+              },
+            ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -222,6 +281,16 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
               ),
               const SizedBox(height: 16),
               TextFormField(
+                controller: _barcodeController,
+                decoration: const InputDecoration(
+                  labelText: 'Barcode / SKU (Optional)',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.qr_code_scanner),
+                  helperText: 'Scan or type barcode for fast POS lookup',
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
                 controller: _priceController,
                 decoration: const InputDecoration(
                   labelText: 'Price (₹)',
@@ -239,6 +308,17 @@ class _ProductFormScreenState extends State<ProductFormScreen> {
                   }
                   return null;
                 },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _costPriceController,
+                decoration: const InputDecoration(
+                  labelText: 'Wholesale Purchase Cost (₹ / Unit)',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.shopping_bag_outlined),
+                  helperText: 'Used to calculate gross profit margin in reports',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
               ),
               const SizedBox(height: 16),
               if (!_isEditing) ...[

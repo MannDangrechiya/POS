@@ -3,12 +3,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get/get.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'controllers/cart_controller.dart';
+import 'controllers/shift_controller.dart';
 import 'receipt_screen.dart';
 import '../../routing/guarded_navigator.dart';
 import '../../routing/permission_gate.dart';
 import '../../routing/screen_permission.dart';
 import '../../data/models/user_model.dart';
+import '../../core/hardware/printer_service.dart';
+import '../../core/hardware/cfd_service.dart';
+import '../../core/hardware/terminal_service.dart';
+import '../../core/offline/offline_order_queue.dart';
 
 /// Payment Selection Screen - Select payment method and complete order
 class PaymentScreen extends StatefulWidget {
@@ -31,6 +37,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
   String? _shopId;
   String? _userId;
 
+  final TextEditingController _cashTenderedController = TextEditingController();
+  double _cashTendered = 0.0;
+
   // Requirement in Detail §32.2 "Enable/disable payment methods" — read from
   // the shop's settings (Settings screen writes these; see settings_screen.dart
   // _KnownSettingKeys). Default to enabled when unset so existing shops with
@@ -38,6 +47,12 @@ class _PaymentScreenState extends State<PaymentScreen> {
   bool _cashEnabled = true;
   bool _upiEnabled = true;
   bool _cardEnabled = true;
+
+  @override
+  void dispose() {
+    _cashTenderedController.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -145,8 +160,30 @@ class _PaymentScreenState extends State<PaymentScreen> {
       _isProcessing = true;
     });
 
+    final cartController = Get.find<CartController>();
+    final totalAmount = cartController.totalAmount;
+    List<dynamic> cartItems = [];
+    Map<String, dynamic> payload = {};
+
     try {
-      final cartController = Get.find<CartController>();
+      if (_selectedPaymentMethod == 'cash' && _cashTendered < totalAmount) {
+        if (pageContext.mounted) {
+          ScaffoldMessenger.of(pageContext).showSnackBar(
+            SnackBar(
+              content: Text(
+                'Cash received (₹${_cashTendered.toStringAsFixed(2)}) is less than total amount (₹${totalAmount.toStringAsFixed(2)})',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        if (mounted) {
+          setState(() {
+            _isProcessing = false;
+          });
+        }
+        return;
+      }
 
       if (cartController.isEmpty) {
         if (pageContext.mounted) {
@@ -169,8 +206,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
       final customerId = await _createOrGetCustomer();
 
       // Step 2: Snapshot cart data before the async call
-      final totalAmount = cartController.totalAmount;
-      final cartItems = List.from(cartController.items);
+      cartItems = List.from(cartController.items);
 
       // Step 3: Send full cart to confirmOrder Cloud Function.
       // The function creates the order, order_items, deducts stock, and
@@ -179,11 +215,22 @@ class _PaymentScreenState extends State<PaymentScreen> {
       final functions = FirebaseFunctions.instance;
       final confirmOrderFunction = functions.httpsCallable('confirmOrder');
 
-      final result = await confirmOrderFunction.call({
+      final activeShiftId = Get.isRegistered<ShiftController>()
+          ? ShiftController.instance.activeShift.value?.shiftId
+          : null;
+      final termId = Get.isRegistered<TerminalService>()
+          ? TerminalService.instance.terminalId.value
+          : 'REG-01';
+
+      payload = <String, dynamic>{
         'customerId': customerId,
         'shopId': _shopId,
         'paymentMethod': _selectedPaymentMethod,
         'totalAmount': totalAmount,
+        'discountAmount': cartController.discountAmount.value,
+        'taxAmount': cartController.taxAmount,
+        'taxRatePercent': cartController.taxRatePercent.value,
+        'terminalId': termId,
         'items': cartItems
             .map((item) => {
                   'productId': item.product.productId,
@@ -192,11 +239,29 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   'totalPrice': item.totalPrice,
                 })
             .toList(),
-      });
+      };
+      if (activeShiftId != null) {
+        payload['shiftId'] = activeShiftId;
+      }
+
+      final result = await confirmOrderFunction.call(payload);
 
       if (result.data['success'] == true) {
         // Step 4: Cloud Function returns the newly-created orderId
         final orderId = result.data['orderId'] as String;
+
+        // Auto-kick cash drawer on cash transactions
+        if (_selectedPaymentMethod?.toLowerCase() == 'cash') {
+          PrinterService.instance.kickCashDrawer();
+        }
+
+        // Notify CFD of success
+        CfdService.instance.showCompletedScreen(
+          orderId: orderId,
+          change: _selectedPaymentMethod?.toLowerCase() == 'cash'
+              ? (_cashTendered - totalAmount)
+              : 0.0,
+        );
 
         if (pageContext.mounted) {
           // Clear cart after order is locked server-side
@@ -219,6 +284,47 @@ class _PaymentScreenState extends State<PaymentScreen> {
         throw Exception(result.data['error'] ?? 'Failed to confirm order');
       }
     } catch (e) {
+      final isNetwork = e.toString().contains('network') ||
+          e.toString().contains('unavailable') ||
+          e.toString().contains('SocketException') ||
+          e.toString().contains('deadline-exceeded');
+
+      if (isNetwork && _selectedPaymentMethod != null) {
+        try {
+          final receiptItems = cartItems
+              .map((item) => ReceiptItemData(
+                    name: item.product.name,
+                    quantity: item.quantityOrWeight,
+                    unit: item.product.measurementType,
+                    price: item.priceSnapshot,
+                    total: item.totalPrice,
+                  ))
+              .toList();
+
+          final offlineId = await OfflineOrderQueue.instance.queueOrder(
+            payload,
+            customerName: widget.customerName,
+            customerMobile: widget.customerMobile,
+            totalAmount: totalAmount,
+            paymentMethod: _selectedPaymentMethod!,
+            receiptItems: receiptItems,
+          );
+
+          cartController.clear();
+          if (pageContext.mounted) {
+            ScaffoldMessenger.of(pageContext).showSnackBar(
+              SnackBar(
+                content: Text('Offline: Order $offlineId saved locally. Receipt printed!'),
+                backgroundColor: Colors.orange[800],
+                duration: const Duration(seconds: 5),
+              ),
+            );
+            Navigator.of(pageContext).pop();
+          }
+          return;
+        } catch (_) {}
+      }
+
       if (pageContext.mounted) {
         ScaffoldMessenger.of(pageContext).showSnackBar(
           SnackBar(
@@ -263,6 +369,167 @@ class _PaymentScreenState extends State<PaymentScreen> {
     });
 
     return customerRef.id;
+  }
+
+  Widget _buildCashCalculator(BuildContext context, ColorScheme colorScheme) {
+    final cartController = Get.find<CartController>();
+    final totalAmount = cartController.totalAmount;
+    final changeToReturn = _cashTendered - totalAmount;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            controller: _cashTenderedController,
+            decoration: const InputDecoration(
+              labelText: 'Cash Received (₹)',
+              prefixIcon: Icon(Icons.payments_outlined),
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
+            onChanged: (val) {
+              setState(() {
+                _cashTendered = double.tryParse(val) ?? 0.0;
+              });
+            },
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              ActionChip(
+                label: Text('Exact (₹${totalAmount.toStringAsFixed(0)})'),
+                onPressed: () {
+                  setState(() {
+                    _cashTendered = totalAmount;
+                    _cashTenderedController.text =
+                        totalAmount.toStringAsFixed(2);
+                  });
+                },
+              ),
+              ActionChip(
+                label: const Text('₹100'),
+                onPressed: () => _setTenderAmount(100),
+              ),
+              ActionChip(
+                label: const Text('₹200'),
+                onPressed: () => _setTenderAmount(200),
+              ),
+              ActionChip(
+                label: const Text('₹500'),
+                onPressed: () => _setTenderAmount(500),
+              ),
+              ActionChip(
+                label: const Text('₹2000'),
+                onPressed: () => _setTenderAmount(2000),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: changeToReturn >= 0
+                  ? Colors.green.withValues(alpha: 0.1)
+                  : Colors.red.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: changeToReturn >= 0 ? Colors.green : Colors.red,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  changeToReturn >= 0 ? 'Change to Return:' : 'Short Amount:',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: changeToReturn >= 0
+                        ? Colors.green[800]
+                        : Colors.red[800],
+                  ),
+                ),
+                Text(
+                  '₹${changeToReturn.abs().toStringAsFixed(2)}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                    color: changeToReturn >= 0
+                        ? Colors.green[900]
+                        : Colors.red[900],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _setTenderAmount(double amount) {
+    setState(() {
+      _cashTendered = amount;
+      _cashTenderedController.text = amount.toStringAsFixed(2);
+    });
+  }
+
+  Widget _buildDynamicUpiQr(BuildContext context, ColorScheme colorScheme) {
+    final cartController = Get.find<CartController>();
+    final totalAmount = cartController.totalAmount;
+    final shopHandle = (_shopId != null && _shopId!.length > 8)
+        ? _shopId!.substring(0, 8)
+        : (_shopId ?? 'pos');
+    final upiUri =
+        'upi://pay?pa=pos.$shopHandle@upi&pn=FruitPOS&am=${totalAmount.toStringAsFixed(2)}&cu=INR&tr=TXN${DateTime.now().millisecondsSinceEpoch}';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        children: [
+          SizedBox(
+            width: 160,
+            height: 160,
+            child: QrImageView(
+              data: upiUri,
+              version: QrVersions.auto,
+              size: 160.0,
+              backgroundColor: Colors.white,
+              padding: const EdgeInsets.all(8),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Scan with any UPI app (GPay / PhonePe / Paytm)',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Exact Amount: ₹${totalAmount.toStringAsFixed(2)}',
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: colorScheme.primary,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -354,9 +621,17 @@ class _PaymentScreenState extends State<PaymentScreen> {
                         onTap: () {
                           setState(() {
                             _selectedPaymentMethod = 'cash';
+                            if (_cashTendered <= 0) {
+                              final cart = Get.find<CartController>();
+                              _setTenderAmount(cart.totalAmount);
+                            }
                           });
                         },
                       ),
+                      if (_selectedPaymentMethod == 'cash') ...[
+                        const SizedBox(height: 12),
+                        _buildCashCalculator(context, colorScheme),
+                      ],
                       const SizedBox(height: 12),
                     ],
                     if (_upiEnabled) ...[
@@ -371,6 +646,10 @@ class _PaymentScreenState extends State<PaymentScreen> {
                           });
                         },
                       ),
+                      if (_selectedPaymentMethod == 'upi') ...[
+                        const SizedBox(height: 12),
+                        _buildDynamicUpiQr(context, colorScheme),
+                      ],
                       const SizedBox(height: 12),
                     ],
                     if (_cardEnabled)
@@ -385,6 +664,18 @@ class _PaymentScreenState extends State<PaymentScreen> {
                           });
                         },
                       ),
+                    const SizedBox(height: 12),
+                    _PaymentMethodCard(
+                      icon: Icons.menu_book,
+                      title: 'Khata / Customer Credit',
+                      subtitle: 'Buy now, settle weekly or monthly',
+                      isSelected: _selectedPaymentMethod == 'credit',
+                      onTap: () {
+                        setState(() {
+                          _selectedPaymentMethod = 'credit';
+                        });
+                      },
+                    ),
                   ],
                 ),
               ),

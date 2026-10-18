@@ -9,7 +9,9 @@ import '../../data/models/product_model.dart';
 import '../../data/models/user_model.dart';
 import '../../routing/permission_gate.dart';
 import '../../routing/screen_permission.dart';
+import '../../routing/guarded_navigator.dart';
 import 'reports_service.dart';
+import 'wholesale_analytics_screen.dart';
 
 /// Full Reports & Analytics. Read-only, shop-scoped by role, locked orders only.
 /// Employee: own daily sales. Admin: shop-wide. SuperAdmin: cross-shop. Viewer: read-only.
@@ -127,6 +129,23 @@ class _ReportsDashboardState extends State<ReportsDashboard> {
       child: Scaffold(
         appBar: AppBar(
           title: Text(widget.readOnly ? 'Reports (View Only)' : 'Reports & Analytics'),
+          actions: [
+            FilledButton.tonalIcon(
+              onPressed: () {
+                GuardedNavigator.push(
+                  context,
+                  permission: ScreenPermission.reportsDashboard,
+                  page: WholesaleAnalyticsScreen(
+                    shopId: _isSuperAdmin ? null : _shopId,
+                    role: _role,
+                  ),
+                );
+              },
+              icon: const Icon(Icons.analytics_outlined),
+              label: const Text('Wholesale & Margin'),
+            ),
+            const SizedBox(width: 8),
+          ],
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(72),
             child: Column(

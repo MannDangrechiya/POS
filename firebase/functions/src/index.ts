@@ -37,6 +37,12 @@ export { confirmOrder } from './orders/confirmOrder';
 // Export cancelOrder - Cancels pending orders (Admin/Super Admin only)
 export { cancelOrder } from './orders/cancelOrder';
 
+// Export processRefund - Itemized returns, restock disposition, and refund issuance
+export { processRefund } from './orders/processRefund';
+
+// Export settleCustomerCredit - Khata / Udhar balance settlement
+export { settleCustomerCredit } from './orders/settleCustomerCredit';
+
 // ============================================================================
 // INVENTORY LOGS
 // ============================================================================

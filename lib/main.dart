@@ -19,6 +19,9 @@ import 'modules/authentication/login_screen.dart';
 import 'modules/authentication/inactivity_wrapper.dart';
 import 'modules/authentication/session_manager.dart';
 import 'modules/pos/controllers/cart_controller.dart';
+import 'core/hardware/printer_service.dart';
+import 'core/hardware/weighing_scale_service.dart';
+import 'core/hardware/cfd_service.dart';
 import 'routing/role_based_router.dart';
 import 'routing/route_guard.dart';
 
@@ -46,8 +49,11 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Initialize GetX cart controller
+    // Initialize GetX hardware services and cart controller
     Get.put(CartController());
+    Get.put(PrinterService());
+    Get.put(WeighingScaleService());
+    Get.put(CfdService());
 
     return MaterialApp(
       title: 'Fruit POS System',

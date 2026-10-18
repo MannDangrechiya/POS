@@ -37,6 +37,11 @@ interface ConfirmOrderPayload {
   paymentMethod: string;
   totalAmount: number;
   items: CartItem[];
+  discountAmount?: number;
+  taxAmount?: number;
+  taxRatePercent?: number;
+  shiftId?: string;
+  terminalId?: string;
 }
 
 export const confirmOrder = functions.https.onCall(async (data, context) => {
@@ -159,28 +164,39 @@ export const confirmOrder = functions.https.onCall(async (data, context) => {
           );
         }
 
-        // ── Price integrity check 1: priceSnapshot must match product.price ──
-        if (Math.abs(item.priceSnapshot - product.price) > PRICE_TOLERANCE) {
+        // ── Price integrity check 1: resolve bulk wholesale tier if applicable ──
+        let applicablePrice = product.price;
+        const tierPricing = (product as any).tierPricing as Array<{ minQuantity: number; unitPrice: number }> | undefined;
+        if (Array.isArray(tierPricing) && tierPricing.length > 0) {
+          const sorted = [...tierPricing].sort((a, b) => a.minQuantity - b.minQuantity);
+          for (const tier of sorted) {
+            if (item.quantityOrWeight >= tier.minQuantity) {
+              applicablePrice = tier.unitPrice;
+            }
+          }
+        }
+
+        if (Math.abs(item.priceSnapshot - applicablePrice) > PRICE_TOLERANCE) {
           throw new functions.https.HttpsError(
             'invalid-argument',
             `Price mismatch for product ${product.name}: ` +
-            `client sent ${item.priceSnapshot}, server has ${product.price}`
+            `client sent ${item.priceSnapshot}, server has ${applicablePrice}`
           );
         }
 
         const qty = item.quantityOrWeight;
 
         // ── Price integrity check 2: totalPrice must equal priceSnapshot × qty ──
-        const expectedItemTotal = product.price * qty;
+        const expectedItemTotal = applicablePrice * qty;
         if (Math.abs(item.totalPrice - expectedItemTotal) > PRICE_TOLERANCE) {
           throw new functions.https.HttpsError(
             'invalid-argument',
             `Item total mismatch for product ${product.name}: ` +
-            `client sent ${item.totalPrice}, expected ${expectedItemTotal} (${product.price} × ${qty})`
+            `client sent ${item.totalPrice}, expected ${expectedItemTotal} (${applicablePrice} × ${qty})`
           );
         }
 
-        // Accumulate server-calculated total using authoritative price
+        // Accumulate server-calculated total using authoritative tier price
         calculatedTotalAmount += expectedItemTotal;
 
         if (product.stock < qty) {
@@ -206,28 +222,91 @@ export const confirmOrder = functions.https.onCall(async (data, context) => {
         });
       }
 
+      // ── Shift read (part of transaction read phase) ──
+      let shiftRef: FirebaseFirestore.DocumentReference | null = null;
+      let shiftData: FirebaseFirestore.DocumentData | null = null;
+      if (payload.shiftId) {
+        shiftRef = db.collection('shifts').doc(payload.shiftId);
+        const shiftSnap = await transaction.get(shiftRef);
+        if (shiftSnap.exists && shiftSnap.data()?.status === 'open') {
+          shiftData = shiftSnap.data()!;
+        }
+      }
+
       // ── Price integrity check 3: totalAmount must match server recalculation ──
-      if (Math.abs(payload.totalAmount - calculatedTotalAmount) > PRICE_TOLERANCE) {
+      const discount = (typeof payload.discountAmount === 'number' && payload.discountAmount >= 0)
+        ? payload.discountAmount
+        : 0;
+      const taxableAmount = Math.max(0, calculatedTotalAmount - discount);
+      const taxAmount = (typeof payload.taxAmount === 'number' && payload.taxAmount >= 0)
+        ? payload.taxAmount
+        : 0;
+      const finalExpectedTotal = taxableAmount + taxAmount;
+
+      if (Math.abs(payload.totalAmount - finalExpectedTotal) > PRICE_TOLERANCE) {
         throw new functions.https.HttpsError(
           'invalid-argument',
           `Order totalAmount mismatch: client sent ${payload.totalAmount}, ` +
-          `server calculated ${calculatedTotalAmount}`
+          `server calculated ${finalExpectedTotal} (subtotal: ${calculatedTotalAmount}, discount: ${discount}, tax: ${taxAmount})`
         );
       }
 
-      // ── 3. Create order document ───────────────────────────────────────────
+      // ── 3. Create order document ID ───────────────────────────────────────
       const orderRef = db.collection('orders').doc();
       const orderId = orderRef.id;
+
+      // ── Credit Limit & Customer Balance Check (Khata / Udhar) ───────────
+      const isCreditPayment = paymentMethod.toLowerCase() === 'credit';
+      if (isCreditPayment) {
+        const creditLimit = typeof (customer as any).creditLimit === 'number'
+          ? (customer as any).creditLimit
+          : 10000;
+        const currentBalance = typeof (customer as any).currentBalance === 'number'
+          ? (customer as any).currentBalance
+          : 0;
+
+        if (currentBalance + finalExpectedTotal > creditLimit) {
+          throw new functions.https.HttpsError(
+            'failed-precondition',
+            `Customer credit limit exceeded. Limit: Rs.${creditLimit.toFixed(2)}, Current Due: Rs.${currentBalance.toFixed(2)}, Attempted: Rs.${finalExpectedTotal.toFixed(2)}`
+          );
+        }
+
+        const newBalance = currentBalance + finalExpectedTotal;
+        const ledgerRef = db.collection('credit_ledgers').doc();
+        transaction.set(ledgerRef, {
+          ledgerId: ledgerRef.id,
+          customerId,
+          shopId,
+          orderId,
+          type: 'debit',
+          amount: finalExpectedTotal,
+          balanceAfter: newBalance,
+          description: `Order ${orderId} purchase on credit`,
+          createdBy: userId,
+          createdAt: now,
+        });
+
+        transaction.update(customerRef, {
+          currentBalance: newBalance,
+        });
+      }
 
       transaction.set(orderRef, {
         orderId,
         shopId,
         customerId,
         employeeId: userId,
-        totalAmount: calculatedTotalAmount,  // server-calculated; never trust client
+        subtotal: calculatedTotalAmount,
+        discountAmount: discount,
+        taxAmount,
+        taxRatePercent: payload.taxRatePercent ?? 0,
+        totalAmount: finalExpectedTotal,  // server-calculated; never trust client
         paymentMethod,
-        paymentStatus: PaymentStatus.Success,   // 'Success'
+        paymentStatus: isCreditPayment ? 'Credit' : PaymentStatus.Success,
         orderStatus: OrderStatus.locked,        // 'locked' — immediately locked
+        shiftId: payload.shiftId ?? null,
+        terminalId: payload.terminalId ?? null,
         createdAt: now,
       });
 
@@ -275,16 +354,45 @@ export const confirmOrder = functions.https.onCall(async (data, context) => {
         entityType: 'order',
         entityId: orderId,
         timestamp: now,
-        totalAmount: calculatedTotalAmount,  // server-calculated
+        totalAmount: finalExpectedTotal,  // server-calculated
         paymentMethod,
+        terminalId: payload.terminalId ?? null,
         itemCount: payload.items.length,
       });
+
+      // ── 8. Atomically accumulate sales into active cashier shift ──────────
+      if (shiftRef && shiftData) {
+        const currentCashSales = Number(shiftData.cashSales || 0);
+        const currentUpiSales = Number(shiftData.upiSales || 0);
+        const currentCardSales = Number(shiftData.cardSales || 0);
+        const currentOrderCount = Number(shiftData.orderCount || 0);
+
+        const methodLower = paymentMethod.toLowerCase();
+        const updateObj: Record<string, any> = {
+          orderCount: currentOrderCount + 1,
+          lastOrderAt: now,
+        };
+        if (methodLower === 'cash') {
+          updateObj.cashSales = currentCashSales + finalExpectedTotal;
+        } else if (methodLower === 'upi') {
+          updateObj.upiSales = currentUpiSales + finalExpectedTotal;
+        } else if (methodLower === 'card') {
+          updateObj.cardSales = currentCardSales + finalExpectedTotal;
+        } else if (methodLower === 'credit') {
+          const currentCreditSales = Number(shiftData.creditSales || 0);
+          updateObj.creditSales = currentCreditSales + finalExpectedTotal;
+        }
+        transaction.update(shiftRef, updateObj);
+      }
 
       return {
         success: true,
         orderId,
         orderStatus: OrderStatus.locked,
-        totalAmount: calculatedTotalAmount,  // server-calculated
+        subtotal: calculatedTotalAmount,
+        discountAmount: discount,
+        taxAmount,
+        totalAmount: finalExpectedTotal,  // server-calculated
         paymentMethod,
         itemCount: payload.items.length,
       };

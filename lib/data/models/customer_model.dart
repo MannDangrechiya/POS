@@ -6,6 +6,8 @@ class CustomerModel {
   final String shopId;
   final String name;
   final String mobile;
+  final double creditLimit;
+  final double currentBalance;
   final DateTime createdAt; // immutable
 
   const CustomerModel({
@@ -13,6 +15,8 @@ class CustomerModel {
     required this.shopId,
     required this.name,
     required this.mobile,
+    this.creditLimit = 10000.0,
+    this.currentBalance = 0.0,
     required this.createdAt,
   });
 
@@ -22,6 +26,8 @@ class CustomerModel {
       shopId: FirestoreParse.stringField(map['shopId']),
       name: FirestoreParse.stringField(map['name']),
       mobile: FirestoreParse.stringField(map['mobile']),
+      creditLimit: FirestoreParse.doubleField(map['creditLimit'], fallback: 10000.0),
+      currentBalance: FirestoreParse.doubleField(map['currentBalance'], fallback: 0.0),
       createdAt: FirestoreParse.dateTimeField(map['createdAt']),
     );
   }
@@ -47,7 +53,29 @@ class CustomerModel {
       'shopId': shopId,
       'name': name,
       'mobile': mobile,
+      'creditLimit': creditLimit,
+      'currentBalance': currentBalance,
       'createdAt': Timestamp.fromDate(createdAt),
     };
+  }
+
+  CustomerModel copyWith({
+    String? customerId,
+    String? shopId,
+    String? name,
+    String? mobile,
+    double? creditLimit,
+    double? currentBalance,
+    DateTime? createdAt,
+  }) {
+    return CustomerModel(
+      customerId: customerId ?? this.customerId,
+      shopId: shopId ?? this.shopId,
+      name: name ?? this.name,
+      mobile: mobile ?? this.mobile,
+      creditLimit: creditLimit ?? this.creditLimit,
+      currentBalance: currentBalance ?? this.currentBalance,
+      createdAt: createdAt ?? this.createdAt,
+    );
   }
 }

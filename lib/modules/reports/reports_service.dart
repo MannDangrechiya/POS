@@ -5,6 +5,7 @@ import '../../core/firestore/firestore_stream_cache.dart';
 import '../../data/models/order_model.dart';
 import '../../data/models/expense_model.dart';
 import '../../data/models/user_model.dart';
+import '../../data/models/product_model.dart';
 
 /// Role-scoped read-only reports. Uses locked orders only; no data modification.
 class ReportsService {
@@ -598,6 +599,229 @@ class ReportsService {
       expenses: expenses,
     );
   }
+
+  /// Comprehensive wholesale & retail margin analytics, spoilage loss, khata exposure,
+  /// and multi-terminal performance breakdown.
+  Future<WholesaleAnalyticsData> getWholesaleAnalytics({
+    required DateTime start,
+    required DateTime end,
+    String? shopId,
+  }) async {
+    final orders = await getLockedOrdersInRangeBatched(
+      start: start,
+      end: end,
+      shopId: shopId,
+    );
+
+    double totalRevenue = 0.0;
+    double totalCost = 0.0;
+    final Map<String, _ProdAcc> prodMap = {};
+    final Map<String, double> terminalMap = {};
+
+    int retailOrders = 0;
+    double retailRev = 0.0;
+    int wholesaleTier1Orders = 0;
+    double wholesaleTier1Rev = 0.0;
+    int wholesaleTier2Orders = 0;
+    double wholesaleTier2Rev = 0.0;
+
+    final Map<String, ProductModel?> prodCache = {};
+
+    for (final order in orders) {
+      totalRevenue += order.totalAmount;
+      final term = order.terminalId.isNotEmpty ? order.terminalId : 'REG-01';
+      terminalMap[term] = (terminalMap[term] ?? 0.0) + order.totalAmount;
+
+      final items = await getOrderItems(order.orderId);
+      double orderTotalKg = 0.0;
+
+      for (final it in items) {
+        final pid = it['productId'] as String? ?? '';
+        if (pid.isEmpty) continue;
+        final qty = (it['quantityOrWeight'] as num?)?.toDouble() ?? 0.0;
+        final itemTotal = (it['totalPrice'] as num?)?.toDouble() ?? 0.0;
+        orderTotalKg += qty;
+
+        if (!prodCache.containsKey(pid)) {
+          final pDoc = await _db.collection('products').doc(pid).get();
+          prodCache[pid] = ProductModel.tryFromDocument(pDoc);
+        }
+        final product = prodCache[pid];
+        final costPerUnit = product?.costPrice ?? 0.0;
+        final effectiveCost = (costPerUnit > 0) ? costPerUnit * qty : 0.0;
+        totalCost += effectiveCost;
+
+        final acc = prodMap.putIfAbsent(
+          pid,
+          () => _ProdAcc(name: product?.name ?? pid, category: product?.categoryId ?? ''),
+        );
+        acc.quantitySold += qty;
+        acc.revenue += itemTotal;
+        acc.cost += effectiveCost;
+      }
+
+      if (orderTotalKg >= 50) {
+        wholesaleTier2Orders++;
+        wholesaleTier2Rev += order.totalAmount;
+      } else if (orderTotalKg >= 10) {
+        wholesaleTier1Orders++;
+        wholesaleTier1Rev += order.totalAmount;
+      } else {
+        retailOrders++;
+        retailRev += order.totalAmount;
+      }
+    }
+
+    final grossProfit = totalRevenue - totalCost;
+    final grossMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0.0;
+
+    final productMargins = prodMap.entries.map((e) {
+      final p = e.value;
+      final profit = p.revenue - p.cost;
+      final marginPct = p.revenue > 0 ? (profit / p.revenue) * 100 : 0.0;
+      return ProductMarginItem(
+        productId: e.key,
+        name: p.name,
+        category: p.category,
+        quantitySold: p.quantitySold,
+        revenue: p.revenue,
+        totalCost: p.cost,
+        grossProfit: profit,
+        marginPercent: marginPct,
+      );
+    }).toList()
+      ..sort((a, b) => b.revenue.compareTo(a.revenue));
+
+    // Spoilage / Wastage
+    double totalSpoilageLoss = 0.0;
+    final Map<String, SpoilageItem> spoilageMap = {};
+
+    try {
+      Query<Map<String, dynamic>> refQ = _db
+          .collection('refunds')
+          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
+          .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(end));
+      if (shopId != null && shopId.isNotEmpty) {
+        refQ = refQ.where('shopId', isEqualTo: shopId);
+      }
+      final refSnap = await refQ.get();
+      for (final doc in refSnap.docs) {
+        final data = doc.data();
+        final rawItems = data['items'] as List<dynamic>? ?? [];
+        for (final raw in rawItems) {
+          if (raw is Map) {
+            final disp = (raw['disposition'] as String? ?? '').toLowerCase();
+            if (disp == 'damaged') {
+              final pid = raw['productId'] as String? ?? '';
+              final pName = raw['productName'] as String? ?? 'Damaged Fruit';
+              final q = (raw['quantityReturned'] as num?)?.toDouble() ?? 0.0;
+              final loss = (raw['refundAmount'] as num?)?.toDouble() ?? 0.0;
+              final reason = raw['reason'] as String? ?? 'Spoiled';
+
+              totalSpoilageLoss += loss;
+              final existing = spoilageMap[pid];
+              if (existing == null) {
+                spoilageMap[pid] = SpoilageItem(
+                  productId: pid,
+                  name: pName,
+                  quantityDamaged: q,
+                  lossAmount: loss,
+                  reasons: [reason],
+                );
+              } else {
+                spoilageMap[pid] = SpoilageItem(
+                  productId: pid,
+                  name: pName,
+                  quantityDamaged: existing.quantityDamaged + q,
+                  lossAmount: existing.lossAmount + loss,
+                  reasons: {...existing.reasons, reason}.toList(),
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    final spoilageRate = totalRevenue > 0 ? (totalSpoilageLoss / totalRevenue) * 100 : 0.0;
+
+    // Outstanding Khata Balances
+    double totalOutstandingCredit = 0.0;
+    final List<KhataDebtorItem> debtors = [];
+
+    try {
+      Query<Map<String, dynamic>> custQ = _db.collection('customers');
+      if (shopId != null && shopId.isNotEmpty) {
+        custQ = custQ.where('shopId', isEqualTo: shopId);
+      }
+      custQ = custQ.where('currentBalance', isGreaterThan: 0);
+      final custSnap = await custQ.get();
+      for (final doc in custSnap.docs) {
+        final d = doc.data();
+        final bal = (d['currentBalance'] as num?)?.toDouble() ?? 0.0;
+        final lim = (d['creditLimit'] as num?)?.toDouble() ?? 10000.0;
+        final util = lim > 0 ? (bal / lim) * 100 : 0.0;
+        totalOutstandingCredit += bal;
+        debtors.add(
+          KhataDebtorItem(
+            customerId: doc.id,
+            name: d['name'] as String? ?? 'Customer',
+            mobile: d['mobile'] as String? ?? '',
+            currentBalance: bal,
+            creditLimit: lim,
+            utilizationPercent: util,
+          ),
+        );
+      }
+      debtors.sort((a, b) => b.currentBalance.compareTo(a.currentBalance));
+    } catch (_) {}
+
+    final totalVolRev = retailRev + wholesaleTier1Rev + wholesaleTier2Rev;
+    final volumeTiers = [
+      WholesaleVolumeTier(
+        tierName: 'Retail (<10 kg)',
+        orderCount: retailOrders,
+        totalRevenue: retailRev,
+        percentage: totalVolRev > 0 ? (retailRev / totalVolRev) * 100 : 0.0,
+      ),
+      WholesaleVolumeTier(
+        tierName: 'Wholesale Tier 1 (10-50 kg)',
+        orderCount: wholesaleTier1Orders,
+        totalRevenue: wholesaleTier1Rev,
+        percentage: totalVolRev > 0 ? (wholesaleTier1Rev / totalVolRev) * 100 : 0.0,
+      ),
+      WholesaleVolumeTier(
+        tierName: 'Wholesale Tier 2 (>50 kg Crate)',
+        orderCount: wholesaleTier2Orders,
+        totalRevenue: wholesaleTier2Rev,
+        percentage: totalVolRev > 0 ? (wholesaleTier2Rev / totalVolRev) * 100 : 0.0,
+      ),
+    ];
+
+    final terminalList = terminalMap.entries
+        .map((e) => TerminalPerformanceItem(
+              terminalId: e.key,
+              orderCount: orders.where((o) => (o.terminalId.isNotEmpty ? o.terminalId : 'REG-01') == e.key).length,
+              totalSales: e.value,
+            ))
+        .toList()
+      ..sort((a, b) => b.totalSales.compareTo(a.totalSales));
+
+    return WholesaleAnalyticsData(
+      totalRevenue: totalRevenue,
+      totalCost: totalCost,
+      grossProfit: grossProfit,
+      grossMarginPercent: grossMarginPercent,
+      totalSpoilageLoss: totalSpoilageLoss,
+      spoilageRatePercent: spoilageRate,
+      totalOutstandingCredit: totalOutstandingCredit,
+      productMargins: productMargins,
+      spoilageItems: spoilageMap.values.toList()..sort((a, b) => b.lossAmount.compareTo(a.lossAmount)),
+      volumeTiers: volumeTiers,
+      debtors: debtors,
+      terminalPerformance: terminalList,
+    );
+  }
 }
 
 /// Structured sales summary.
@@ -688,5 +912,148 @@ class ExpenseSummary {
         totalExpenses: 0.0,
         byCategory: <String, double>{},
         expenses: <ExpenseModel>[],
+      );
+}
+
+class _ProdAcc {
+  final String name;
+  final String category;
+  double quantitySold = 0.0;
+  double revenue = 0.0;
+  double cost = 0.0;
+
+  _ProdAcc({required this.name, required this.category});
+}
+
+/// Margin analysis row for a specific fruit product
+class ProductMarginItem {
+  final String productId;
+  final String name;
+  final String category;
+  final double quantitySold;
+  final double revenue;
+  final double totalCost;
+  final double grossProfit;
+  final double marginPercent;
+
+  const ProductMarginItem({
+    required this.productId,
+    required this.name,
+    required this.category,
+    required this.quantitySold,
+    required this.revenue,
+    required this.totalCost,
+    required this.grossProfit,
+    required this.marginPercent,
+  });
+}
+
+/// Damaged / spoiled fruit loss row
+class SpoilageItem {
+  final String productId;
+  final String name;
+  final double quantityDamaged;
+  final double lossAmount;
+  final List<String> reasons;
+
+  const SpoilageItem({
+    required this.productId,
+    required this.name,
+    required this.quantityDamaged,
+    required this.lossAmount,
+    required this.reasons,
+  });
+}
+
+/// Wholesale volume distribution tier
+class WholesaleVolumeTier {
+  final String tierName;
+  final int orderCount;
+  final double totalRevenue;
+  final double percentage;
+
+  const WholesaleVolumeTier({
+    required this.tierName,
+    required this.orderCount,
+    required this.totalRevenue,
+    required this.percentage,
+  });
+}
+
+/// Outstanding customer credit / Khata debtor item
+class KhataDebtorItem {
+  final String customerId;
+  final String name;
+  final String mobile;
+  final double currentBalance;
+  final double creditLimit;
+  final double utilizationPercent;
+
+  const KhataDebtorItem({
+    required this.customerId,
+    required this.name,
+    required this.mobile,
+    required this.currentBalance,
+    required this.creditLimit,
+    required this.utilizationPercent,
+  });
+}
+
+/// Multi-register / counter sales breakdown
+class TerminalPerformanceItem {
+  final String terminalId;
+  final int orderCount;
+  final double totalSales;
+
+  const TerminalPerformanceItem({
+    required this.terminalId,
+    required this.orderCount,
+    required this.totalSales,
+  });
+}
+
+/// Aggregated wholesale & margin analytics data
+class WholesaleAnalyticsData {
+  final double totalRevenue;
+  final double totalCost;
+  final double grossProfit;
+  final double grossMarginPercent;
+  final double totalSpoilageLoss;
+  final double spoilageRatePercent;
+  final double totalOutstandingCredit;
+  final List<ProductMarginItem> productMargins;
+  final List<SpoilageItem> spoilageItems;
+  final List<WholesaleVolumeTier> volumeTiers;
+  final List<KhataDebtorItem> debtors;
+  final List<TerminalPerformanceItem> terminalPerformance;
+
+  const WholesaleAnalyticsData({
+    required this.totalRevenue,
+    required this.totalCost,
+    required this.grossProfit,
+    required this.grossMarginPercent,
+    required this.totalSpoilageLoss,
+    required this.spoilageRatePercent,
+    required this.totalOutstandingCredit,
+    required this.productMargins,
+    required this.spoilageItems,
+    required this.volumeTiers,
+    required this.debtors,
+    required this.terminalPerformance,
+  });
+
+  factory WholesaleAnalyticsData.empty() => const WholesaleAnalyticsData(
+        totalRevenue: 0.0,
+        totalCost: 0.0,
+        grossProfit: 0.0,
+        grossMarginPercent: 0.0,
+        totalSpoilageLoss: 0.0,
+        spoilageRatePercent: 0.0,
+        totalOutstandingCredit: 0.0,
+        productMargins: [],
+        spoilageItems: [],
+        volumeTiers: [],
+        debtors: [],
+        terminalPerformance: [],
       );
 }
