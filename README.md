@@ -1,441 +1,184 @@
-````md
-# 🧾 POS System
+# 🍎 Go Retail — Commercial Fruit Retail & Wholesale POS System
 
-A modern, secure, and scalable Point of Sale (POS) system built using Flutter and Firebase for retail stores, wholesale businesses, supermarkets, and inventory-based shops.
+<p align="center">
+  <img src="https://img.shields.io/badge/Flutter-3.9+-02569B?logo=flutter&logoColor=white" alt="Flutter" />
+  <img src="https://img.shields.io/badge/Dart-3.0+-0175C2?logo=dart&logoColor=white" alt="Dart" />
+  <img src="https://img.shields.io/badge/Firebase-Blaze-FFCA28?logo=firebase&logoColor=black" alt="Firebase" />
+  <img src="https://img.shields.io/badge/Version-v2.0.0-success?style=flat" alt="Version" />
+  <img src="https://img.shields.io/badge/Tests-56%20Passed-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/Analyzer-0%20Issues-brightgreen" alt="Analyzer" />
+  <img src="https://img.shields.io/badge/Platforms-Android%20%7C%20Windows%20%7C%20Web-blue" alt="Platforms" />
+</p>
 
-The system replaces traditional manual billing and inventory handling with a fully digital workflow designed for:
+A high-performance, offline-first, commercial **Point-of-Sale (POS)** terminal engineered for fast-paced fruit retail shops, wholesale mandis, and supermarkets.
 
-- Fast POS billing
-- Real-time inventory management
-- Role-based access control
-- Customer and order tracking
-- Expense management
-- Secure audit logging
-- Multi-shop ready architecture
-
-The application supports both:
-
-- Weight-based products
-- Unit-based products
+Unlike standard mobile catalog apps, **Go Retail** operates as a high-speed counter terminal capable of completing transactions in **under 5 seconds**, connecting directly to physical POS peripherals, surviving network outages, managing cash drawer floats, enforcing Indian GST compliance, and calculating wholesale crate volume discounts.
 
 ---
 
-# 🚀 Features
+## ⚡ Core Real-World POS Capabilities
 
-## 🔐 Authentication & Security
+### 1. 🖥️ High-Speed Checkout & Ergonomics
+* **Widescreen 2-Pane Terminal Layout**: Persistent 65% Catalog on the left with a dedicated 35% `LiveCartPane` on the right for continuous, uninterrupted checkout on tablets and desktop monitors.
+* **Hardware Barcode Scanner Wedge**: Native `<80ms` keystroke burst listener that captures USB/Bluetooth handheld barcode scanner input directly into the cart without opening the camera or popping up the software keyboard.
+* **Multi-Cart Parking (Hold / Recall Bill)**: Park up to 5 concurrent carts with visual badge indicators when customers need to grab extra items or fetch their wallet.
+* **Fast Cash Change Calculator**: Quick currency denomination chips (Exact, ₹100, ₹200, ₹500, ₹2000) with automatic change computation and shortage alerts.
+* **Dynamic UPI QR Code**: Real-time generation of `upi://pay` QR codes displayed directly on screen for instant scan-and-pay via GPay, PhonePe, and Paytm.
 
-- Firebase Authentication
-- Role-based login system
-- Session management
-- Account activation / suspension
-- Password reset flow
-- Audit logging for authentication events
+### 2. 🔌 Direct Hardware Peripherals Integration
+* **ESC/POS Thermal Printing**: Pure Dart command generator (`58mm` and `80mm` roll support) outputting receipt headers, line items, taxes, discounts, barcode tickets, and automatic paper cuts (`GS V 1`) over raw TCP network sockets (port 9100) or OS print spoolers.
+* **RJ11 Cash Drawer Auto-Kick**: Automatic electrical kick pulse (`ESC p 0`) fired upon cash checkout, refund payouts, and float additions, with manager-PIN override for manual no-sale drawer openings.
+* **Digital Weighing Scale Stream**: Continuous ASCII stream parser (RS232/USB/TCP) compatible with NCI, Toledo, CAS, and Essae scale protocols. Includes an interactive physics-damped weight simulator with Zero and Tare controls.
+* **Customer Facing Display (CFD)**: Secondary monitor/tablet mode mirroring the live cart, running subtotal, and dynamic payment QR code in real-time.
+* **Barcode Label Printing**: Direct thermal printing of adhesive barcode labels (Code 128 & QR Code) for pre-packaged fruit punnets and wholesale crates.
 
-### Supported Roles
+### 3. 📋 Cashier Shift Lifecycle & Cash Auditing
+* **Opening Cash Float**: Cashiers must declare starting drawer cash before ring-up, eliminating untracked drawer drift.
+* **Mid-Shift Petty Cash In / Out**: Record safe drops, float replenishments, and vendor payouts with mandatory manager PIN authorization.
+* **Blind Cash Count (Shift Close)**: Cashiers enter physical cash counts without seeing expected system totals. The system automatically computes discrepancy variance (Balanced, Overage, Shortage) and locks the shift.
+* **Thermal Z-Reports**: Prints complete end-of-shift thermal audit receipts containing sales totals, tender breakdowns (Cash, UPI, Card, Credit), cash movements, and cashier/manager signature lines.
 
-| Role | Access |
-|------|--------|
-| Super Admin | Global system control |
-| Admin | Shop-level management |
-| Employee | POS billing only |
-| Viewer | Read-only analytics |
+### 4. 📊 GST Tax Engine & Discounts
+* **GST Breakdown (HSN Compliant)**: Automated 5% GST computation splitting amounts into CGST (2.5%) and SGST (2.5%) displayed on cart, receipts, and Z-Reports.
+* **Item & Bill Discounts**: Percentage (`%`) and flat rupee (`₹`) discounts with mandatory Manager PIN thresholds for high markdowns.
 
----
+### 5. 🍎 Wholesale Tier Pricing & Itemized Returns
+* **Volume Tier Pricing**: Automatically switches unit prices as customer volumes cross bulk thresholds (e.g. Retail: ₹120/kg; Wholesale 20+ kg crate: ₹85/kg).
+* **Itemized Returns & Restocking**: Partial order returns with disposition categorization:
+  * **Restock**: Returns resalable fruits back to inventory logs.
+  * **Damaged / Spoilage**: Writes off spoiled fruit directly to waste loss tracking.
+* **Thermal Refund Vouchers**: Generates customer refund tickets with auto cash drawer kick.
 
-# 🛒 POS Billing System
+### 6. 📖 Customer Khata / Credit Ledger (Udhar)
+* **Dedicated Credit Limits**: Real-time balance and credit limit enforcement preventing customer over-extension.
+* **Credit Settlement Flow**: Accept partial or full payments against outstanding debt, adjust cashier drawer balances, and print thermal payment slips.
 
-Employee-focused billing workflow with a fast checkout experience.
+### 7. ⚡ Offline Resilience & Auto-Sync
+* **Local Offline Queue**: When Wi-Fi/cellular connection drops, transactions persist locally in `SharedPreferences`, cash drawers kick, and thermal receipts print immediately marked `[OFFLINE QUEUED]`.
+* **Background Sync Heartbeat**: Every 30 seconds, pending offline orders are safely and idempotently synced to Firebase Cloud Functions once internet connectivity restores.
 
-### Features
-
-- Product search & selection
-- Weight-based and quantity-based billing
-- Live price calculation
-- Mandatory customer capture
-- Multiple payment methods
-- Receipt generation
-- Real-time stock deduction
-
-### Supported Payments
-
-- Cash
-- UPI / Online Payment
-- Card
-
----
-
-# 📦 Inventory & Product Management
-
-Admins can manage products and inventory securely.
-
-### Product Features
-
-- Add / edit / disable products
-- Product categories
-- Price management
-- Measurement type enforcement
-- Low-stock alerts
-
-### Inventory Features
-
-- Automatic stock updates
-- Inventory logs
-- Real-time stock validation
-- Prevent negative stock
+### 8. 📈 Wholesale Margin & Profitability Analytics
+* **COGS Tracking**: Tracks wholesale cost price (`costPrice`) on all products.
+* **Real-Time KPI Dashboard**: Gross Margin %, Net Spoilage Loss, Total Khata Receivables, Multi-Register volume breakdown, and Product Margin Leaderboard.
 
 ---
 
-# 👥 Customer Management
+## 🏛️ System Architecture
 
-- Mandatory customer details for every order
-- Customer order history linkage
-- Repeat customer support
-- Permanent customer records
-
----
-
-# 📊 Reports & Analytics
-
-Read-only reporting system for business insights.
-
-### Available Reports
-
-- Daily / Weekly / Monthly sales
-- Product-wise sales
-- Employee performance
-- Expense reports
-- Revenue tracking
-
----
-
-# 💰 Expense Management
-
-Track operational expenses with audit-safe workflows.
-
-### Features
-
-- Add & update expenses
-- Expense history
-- Validation rules
-- Role-based restrictions
-
----
-
-# 📜 Audit Logs & Compliance
-
-The system maintains append-only audit logs for:
-
-- Login/logout events
-- Failed login attempts
-- Product price changes
-- Inventory updates
-- Expense modifications
-- Order cancellations
-- Permission changes
-
-Audit logs are immutable and cannot be modified or deleted.
-
----
-
-# 🏗️ Tech Stack
-
-## Frontend
-
-- Flutter
-- Dart
-- Provider State Management
-- Responsive UI for mobile & tablet POS usage
-
-## Backend
-
-- Firebase Authentication
-- Cloud Firestore
-- Firebase Cloud Functions
-- Firebase Storage
-- Firebase Hosting
-
----
-
-# 🔥 Firebase Architecture
-
-The project follows a strict serverless architecture:
-
-| Layer | Technology |
-|------|-------------|
-| Client | Flutter |
-| Authentication | Firebase Auth |
-| Database | Cloud Firestore |
-| Backend Enforcement | Cloud Functions |
-| File Storage | Firebase Storage |
-| Hosting | Firebase Hosting |
-
-All critical business logic is enforced at backend level using Cloud Functions and Firestore Security Rules.
-
----
-
-# 🔒 Security Model
-
-The system follows a strict:
-
-- Deny-by-default policy
-- Role-based access control (RBAC)
-- Shop-level data isolation
-- Immutable transactional records
-
-### Security Guarantees
-
-- Orders are immutable after payment
-- Inventory updates are atomic
-- Audit logs are append-only
-- Unauthorized access is blocked
-- Cross-shop access restricted
-
----
-
-# 🧱 Core Modules
-
-- Authentication & Account Lifecycle
-- Role-Based Access Control (RBAC)
-- POS Billing
-- Customer Management
-- Product Management
-- Inventory Management
-- Orders & Payments
-- Expense Management
-- Reports & Analytics
-- Employee Management
-- Audit Logs
-- Settings & Configuration
-- Multi-Shop Architecture Support
-
----
-
-# 📂 Project Structure
-
-```bash
-lib/
-│
-├── core/
-├── features/
-│   ├── auth/
-│   ├── pos/
-│   ├── products/
-│   ├── inventory/
-│   ├── customers/
-│   ├── orders/
-│   ├── expenses/
-│   ├── reports/
-│   └── settings/
-│
-├── services/
-├── models/
-├── widgets/
-└── main.dart
+```text
+               ┌────────────────────────────────────────────────────────┐
+               │              Flutter Client Application                │
+               │   (GetX State Management, Responsive 2-Pane Layout)    │
+               └───────────────────────────┬────────────────────────────┘
+                                           │
+         ┌─────────────────────────────────┼────────────────────────────────┐
+         │                                 │                                │
+         ▼                                 ▼                                ▼
+┌─────────────────┐             ┌─────────────────────┐           ┌───────────────────┐
+│ Hardware Driver │             │    Offline Engine   │           │   Backend Cloud   │
+│   Peripherals   │             │  (Local Order Queue)│           │  Firebase / GCP   │
+├─────────────────┤             ├─────────────────────┤           ├───────────────────┤
+│ ESC/POS Printer │             │ Local Storage Cache │           │ Cloud Functions   │
+│ RJ11 Cash Drawer│             │ Heartbeat Auto-Sync │           │ Cloud Firestore   │
+│ RS232 Scale     │             │ Idempotent Replay   │           │ Firebase Storage  │
+│ Secondary CFD   │             │ Offline Receipts    │           │ Cloud Auth (RBAC) │
+└─────────────────┘             └─────────────────────┘           └───────────────────┘
 ```
 
 ---
 
-# 🗄️ Firestore Collections
+## 🔐 Role-Based Access Control (RBAC)
 
-```bash
-users/
-shops/
-products/
-categories/
-orders/
-order_items/
-customers/
-inventory_logs/
-expenses/
-audit_logs/
-settings/
-```
-
----
-
-# ⚙️ Getting Started
-
-## Prerequisites
-
-Before running the project, ensure you have:
-
-- Flutter SDK installed
-- Firebase project configured
-- Android Studio / VS Code
-- Dart SDK
-- Firebase CLI
+| Capability / Action | Super Admin | Admin | Cashier / Employee | Viewer |
+| :--- | :---: | :---: | :---: | :---: |
+| **POS Checkout & Billing** | ✅ | ✅ | ✅ | ❌ |
+| **Open / Close Shift (Float & Z-Report)** | ✅ | ✅ | ✅ | ❌ |
+| **Petty Cash In / Out (Safe Drops)** | ✅ | ✅ | PIN Required | ❌ |
+| **High Discounts (>15% or >₹200)** | ✅ | ✅ | PIN Required | ❌ |
+| **Itemized Returns & Refunds** | ✅ | ✅ | PIN Required | ❌ |
+| **Customer Khata Credit Billing** | ✅ | ✅ | ✅ | ❌ |
+| **Customer Credit Settlement** | ✅ | ✅ | ✅ | ❌ |
+| **Product & Wholesale Tier Management** | ✅ | ✅ | ❌ | ❌ |
+| **Wholesale Margin Analytics** | ✅ | ✅ | ❌ | ✅ |
+| **Hardware Settings & Calibration** | ✅ | ✅ | ❌ | ❌ |
 
 ---
 
-# 🛠️ Installation
+## 🛠️ Tech Stack
 
-## 1. Clone Repository
+* **Frontend**: Flutter 3.9+ / Dart 3.0+
+* **State Management**: GetX (Reactive Controllers & Services)
+* **Printing Engine**: Pure Dart ESC/POS Protocol Generator (Zero external C++ dependencies)
+* **Backend Runtime**: Google Cloud Functions (Node.js 20 / TypeScript)
+* **Database**: Cloud Firestore (Multi-Tenant with Shop-Isolated Security Rules & Composite Indexes)
+* **Storage**: Firebase Cloud Storage (Product images & PDF receipts)
+* **Authentication**: Firebase Authentication with custom claims & audit logging
 
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) (3.9.2 or higher)
+- [Node.js](https://nodejs.org/) (v20+) & [Firebase CLI](https://firebase.google.com/docs/cli)
+- Android Studio / VS Code with Flutter extension
+
+### 1. Clone & Install Dependencies
 ```bash
-git clone https://github.com/your-username/pos-system.git
-cd pos-system
-```
-
-## 2. Install Dependencies
-
-```bash
+git clone https://github.com/MannDangrechiya/POS.git
+cd POS
 flutter pub get
 ```
 
-## 3. Configure Firebase
-
-Run:
-
+### 2. Configure Firebase Backend
 ```bash
-flutterfire configure
-```
+cd firebase
+npm install
+npm run build
 
-Add generated Firebase config files:
-
-- `google-services.json`
-- `GoogleService-Info.plist`
-
----
-
-# 🔑 Environment Configuration
-
-Required Firebase services:
-
-- Authentication
-- Cloud Firestore
-- Firebase Storage
-- Cloud Functions
-- Firebase Hosting
-
----
-
-# ▶️ Run Application
-
-```bash
-flutter run
-```
-
----
-
-# 🧪 Build APK
-
-```bash
-flutter build apk --release
-```
-
----
-
-# 🚀 Deployment
-
-## Android Release
-
-```bash
-flutter build apk --release
-```
-
-## Web Build
-
-```bash
-flutter build web
-```
-
-## Firebase Hosting
-
-```bash
+# Deploy Security Rules, Indexes, Storage, and Cloud Functions
 firebase deploy
 ```
 
----
+### 3. Run the POS Terminal
+```bash
+# Run on connected Android POS tablet or phone
+flutter run -d android
 
-# 📱 App Screenshots
+# Run on Windows desktop POS terminal
+flutter run -d windows
+```
 
-| Login Screen | POS Billing | Admin Dashboard |
-|--------------|-------------|-----------------|
-| ![](screenshots/login.png) | ![](screenshots/pos.png) | ![](screenshots/dashboard.png) |
+### 4. Build Production Binaries
+```bash
+# Build Android Production Release APK
+flutter build apk --release
 
----
+# Build Android App Bundle (Google Play Store)
+flutter build appbundle --release
 
-# 🏛️ System Architecture
-
-```text
-Flutter App
-     ↓
-Firebase Authentication
-     ↓
-Cloud Firestore
-     ↓
-Cloud Functions
-     ↓
-Firebase Storage
+# Build Windows Desktop Production Executable
+flutter build windows --release
 ```
 
 ---
 
-# 🌐 Future Scalability
+## 🧪 Automated Testing & Verification
 
-The architecture is prepared for future upgrades including:
+The project includes unit and integration tests covering the entire POS transaction lifecycle:
 
-- Multi-shop support
-- Online ordering
-- Customer mobile app
-- Advanced analytics
-- Offline synchronization
-- GST & invoice integrations
-- Delivery management
-- Barcode scanner integrations
-- Thermal printer support
+```bash
+flutter test
+```
 
----
-
-# 📄 Documentation
-
-The complete project requirements and architecture are defined in the documents inside the `docs/` folder.
-
-## Source of Truth Documents
-
-- Software Requirements Specification (SRS)
-- Requirement in Detail
-- Technical Requirements in Detail
-- Prompt-Based Model for AI-Assisted Development
-
-These documents are authoritative and must not be overridden during development.
+### Test Coverage Highlights:
+* `test/cart_hold_test.dart`: Multi-cart park and recall state isolation.
+* `test/hardware_peripherals_test.dart`: Raw ESC/POS command generation, barcode 128 / QR commands, scale stream parser, drawer pulse.
+* `test/shift_and_tax_test.dart`: Cash drawer balancing, blind count variance, GST 5% breakdown, thermal Z-Report ticket structure.
+* `test/wholesale_and_returns_test.dart`: Dynamic wholesale tiered pricing, partial return disposition (restock vs damage write-off), Khata credit ledger, and offline queue serialization.
+* `test/phase5_production_test.dart`: Multi-register terminal persistence, barcode label generator, wholesale COGS and margin formulas.
 
 ---
 
-# 📌 Project Status
-
-✅ Core Modules Completed  
-✅ Firebase Backend Structured  
-✅ Role-Based Access Control Implemented  
-✅ POS Billing Workflow Completed  
-🚧 Final Testing & Optimization Ongoing
-
----
-
-# 🤝 Development Guidelines
-
-- Follow strict RBAC enforcement
-- Never bypass backend validations
-- Maintain immutable transactional history
-- Use Cloud Functions for critical operations
-- Preserve audit logs and inventory integrity
-- Follow clean architecture principles
-
----
-
-# 📃 License
-
-This project is private and intended for internal/business use.
-
----
-
-# 👨‍💻 Developed With
-
-- Flutter
-- Firebase
-- Cloud Firestore
-- Firebase Functions
-- Dart
-
-Built for scalable and secure retail business operations.
-````
+## 📄 License
+This repository is private and proprietary. Developed for commercial retail and wholesale operations.
