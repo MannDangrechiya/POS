@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:get/get.dart';
 import '../../data/models/product_model.dart';
+import '../../core/hardware/weighing_scale_service.dart';
 
 /// Dialog for selecting quantity or weight for a product
 class QuantitySelectionDialog extends StatefulWidget {
@@ -236,6 +238,56 @@ class _QuantitySelectionDialogState extends State<QuantitySelectionDialog> {
                 ),
               ],
             ),
+            if (_isWeightBased) ...[
+              const SizedBox(height: 12),
+              Obx(() {
+                final scale = WeighingScaleService.instance;
+                final scaleWeight = scale.currentWeight.value;
+                return Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: colorScheme.outlineVariant),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.scale_rounded, size: 20, color: colorScheme.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Scale: ${scaleWeight.toStringAsFixed(3)} kg',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      const SizedBox(width: 6),
+                      if (scale.isStable.value)
+                        const Text(
+                          '(STABLE)',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green,
+                          ),
+                        ),
+                      const Spacer(),
+                      FilledButton.tonal(
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: scaleWeight > 0
+                            ? () {
+                                _quantityController.text = scaleWeight.toStringAsFixed(2);
+                                _updateQuantity(_quantityController.text);
+                              }
+                            : null,
+                        child: const Text('Capture Weight', style: TextStyle(fontSize: 12)),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+            ],
             const SizedBox(height: 24),
             // Total price
             Container(

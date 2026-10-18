@@ -9,6 +9,7 @@ import 'pos_home_screen.dart';
 import '../../routing/guarded_navigator.dart';
 import '../../routing/permission_gate.dart';
 import '../../routing/screen_permission.dart';
+import '../../core/hardware/printer_service.dart';
 
 /// Order Success & Receipt Screen - Display order confirmation and receipt
 class ReceiptScreen extends StatelessWidget {
@@ -91,6 +92,7 @@ class ReceiptScreen extends StatelessWidget {
                 ),
                 pw.SizedBox(height: 8),
                 pw.Text('Order ID: $orderId'),
+                pw.Text('Date & Time: ${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}'),
                 pw.Text('Customer: $customerName'),
                 pw.Text('Mobile: $customerMobile'),
                 pw.Text('Payment: ${_getPaymentMethodLabel()}'),
@@ -193,6 +195,95 @@ class ReceiptScreen extends StatelessWidget {
           ),
         );
       }
+    }
+  }
+
+  Future<void> _printReceipt(BuildContext context) async {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    try {
+      final itemsSnapshot = await FirebaseFirestore.instance
+          .collection('order_items')
+          .where('orderId', isEqualTo: orderId)
+          .get();
+
+      final receiptItems = <ReceiptItemData>[];
+
+      for (final itemDoc in itemsSnapshot.docs) {
+        final itemData = itemDoc.data();
+        final productDoc = await FirebaseFirestore.instance
+            .collection('products')
+            .doc(itemData['productId'] as String)
+            .get();
+
+        final product = ProductModel.tryFromDocument(productDoc);
+        if (product != null) {
+          receiptItems.add(ReceiptItemData(
+            name: product.name,
+            quantity: (itemData['quantityOrWeight'] as num?)?.toDouble() ?? 0.0,
+            unit: product.measurementType.toLowerCase(),
+            price: (itemData['priceSnapshot'] as num?)?.toDouble() ?? 0.0,
+            total: (itemData['totalPrice'] as num?)?.toDouble() ?? 0.0,
+          ));
+        }
+      }
+
+      final orderDoc = await FirebaseFirestore.instance
+          .collection('orders')
+          .doc(orderId)
+          .get();
+      final orderData = orderDoc.data() ?? {};
+      final orderSubtotal = (orderData['subtotal'] as num?)?.toDouble() ?? totalAmount;
+      final orderDiscount = (orderData['discountAmount'] as num?)?.toDouble() ?? 0.0;
+      final orderTax = (orderData['taxAmount'] as num?)?.toDouble() ?? 0.0;
+
+      final success = await PrinterService.instance.printOrderReceipt(
+        OrderReceiptData(
+          orderId: orderId,
+          orderDate: DateTime.now(),
+          customerName: customerName,
+          customerMobile: customerMobile,
+          items: receiptItems,
+          subtotal: orderSubtotal,
+          discountAmount: orderDiscount,
+          taxAmount: orderTax,
+          totalAmount: totalAmount,
+          paymentMethod: paymentMethod,
+        ),
+      );
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success
+                ? 'Receipt printed to ${PrinterService.instance.connectionType.value.name.toUpperCase()} printer'
+                : 'Print error: check printer status'),
+            backgroundColor: success ? Colors.green : colorScheme.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Print failed: $e'),
+            backgroundColor: colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _openCashDrawer(BuildContext context) async {
+    final ok = await PrinterService.instance.kickCashDrawer();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(ok ? 'Cash drawer kick signal sent' : 'Drawer kick failed'),
+          backgroundColor: ok ? Colors.green : Colors.red,
+        ),
+      );
     }
   }
 
@@ -435,19 +526,11 @@ class ReceiptScreen extends StatelessWidget {
                     Row(
                       children: [
                         Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'Direct print will be available in a future update',
-                                  ),
-                                ),
-                              );
-                            },
+                          child: FilledButton.tonalIcon(
+                            onPressed: () => _printReceipt(context),
                             icon: const Icon(Icons.print),
-                            label: const Text('Print'),
-                            style: OutlinedButton.styleFrom(
+                            label: const Text('Thermal Print'),
+                            style: FilledButton.styleFrom(
                               padding: const EdgeInsets.symmetric(vertical: 12),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(12),
@@ -470,6 +553,18 @@ class ReceiptScreen extends StatelessWidget {
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 12),
+                    OutlinedButton.icon(
+                      onPressed: () => _openCashDrawer(context),
+                      icon: const Icon(Icons.point_of_sale),
+                      label: const Text('Open Cash Drawer'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
                     ),
                   ],
                 ),
